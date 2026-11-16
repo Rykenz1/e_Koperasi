@@ -20,46 +20,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     // --- ADD OUTLET ---
     if ($action === 'add_outlet') {
-        $name     = trim($_POST['outlet_name']);
-        $location = trim($_POST['location']);
-        $contact  = trim($_POST['contact_number']);
-        $hours    = trim($_POST['operating_hours']);
-        $status   = $_POST['status'] ?? 'Active';
-
+        $name       = trim($_POST['outlet_name']);
+        $location   = trim($_POST['location']);
+        $contact    = trim($_POST['contact_number']);
+        $open_time  = $_POST['open_time'] ?? '';
+        $close_time = $_POST['close_time'] ?? '';
+        $hours      = (!empty($open_time) && !empty($close_time)) 
+                      ? date("h:i A", strtotime($open_time)) . " - " . date("h:i A", strtotime($close_time)) 
+                      : "";
+        $status     = $_POST['status'] ?? 'Active';
         if (!empty($name) && !empty($location)) {
-            // Note: Change `location` to `location_description` if your SQL table uses that column name
             $stmt = $conn->prepare("INSERT INTO outlet (outlet_name, location, contact_number, operating_hours, status) VALUES (?, ?, ?, ?, ?)");
             $stmt->bind_param("sssss", $name, $location, $contact, $hours, $status);
-            if ($stmt->execute()) {
-                $message = "Outlet '$name' added successfully.";
-                $msg_type = "success";
-            } else {
-                $message = "Error adding outlet. Name may already exist.";
-                $msg_type = "error";
-            }
+            $stmt->execute();
+            $message = "Outlet '$name' added successfully.";
+            $msg_type = "success";
             $stmt->close();
         }
         $active_tab = 'outlets';
     }
-
     // --- EDIT OUTLET ---
     elseif ($action === 'edit_outlet') {
-        $id       = intval($_POST['outlet_id']);
-        $name     = trim($_POST['outlet_name']);
-        $location = trim($_POST['location']);
-        $contact  = trim($_POST['contact_number']);
-        $hours    = trim($_POST['operating_hours']);
-        $status   = $_POST['status'] ?? 'Active';
-
+        $id         = intval($_POST['outlet_id']);
+        $name       = trim($_POST['outlet_name']);
+        $location   = trim($_POST['location']);
+        $contact    = trim($_POST['contact_number']);
+        $open_time  = $_POST['open_time'] ?? '';
+        $close_time = $_POST['close_time'] ?? '';
+        $hours      = (!empty($open_time) && !empty($close_time)) 
+                      ? date("h:i A", strtotime($open_time)) . " - " . date("h:i A", strtotime($close_time)) 
+                      : "";
+        $status     = $_POST['status'] ?? 'Active';
         $stmt = $conn->prepare("UPDATE outlet SET outlet_name = ?, location = ?, contact_number = ?, operating_hours = ?, status = ? WHERE outlet_id = ?");
         $stmt->bind_param("sssssi", $name, $location, $contact, $hours, $status, $id);
-        if ($stmt->execute()) {
-            $message = "Outlet updated successfully.";
-            $msg_type = "success";
-        } else {
-            $message = "Failed to update outlet.";
-            $msg_type = "error";
-        }
+        $stmt->execute();
+        $message = "Outlet updated successfully.";
+        $msg_type = "success";
         $stmt->close();
         $active_tab = 'outlets';
     }
@@ -748,7 +744,16 @@ if ($res_staffs) {
                 </div>
                 <div class="form-group">
                     <label>Operating Hours</label>
-                    <input type="text" name="operating_hours" placeholder="e.g., 08:00 AM - 06:00 PM">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1;">
+                            <small style="display: block; color: var(--text-muted); margin-bottom: 4px;">Open</small>
+                            <input type="time" name="open_time" value="08:00">
+                        </div>
+                        <div style="flex: 1;">
+                            <small style="display: block; color: var(--text-muted); margin-bottom: 4px;">Close</small>
+                            <input type="time" name="close_time" value="22:00">
+                        </div>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label>Status</label>
@@ -786,7 +791,16 @@ if ($res_staffs) {
                 </div>
                 <div class="form-group">
                     <label>Operating Hours</label>
-                    <input type="text" name="operating_hours" id="edit_operating_hours">
+                    <div style="display: flex; gap: 12px;">
+                        <div style="flex: 1;">
+                            <small style="display: block; color: var(--text-muted); margin-bottom: 4px;">Open</small>
+                            <input type="time" name="open_time" id="edit_open_time">
+                        </div>
+                        <div style="flex: 1;">
+                            <small style="display: block; color: var(--text-muted); margin-bottom: 4px;">Close</small>
+                            <input type="time" name="close_time" id="edit_close_time">
+                        </div>
+                    </div>
                 </div>
                 <div class="form-group">
                     <label>Status</label>
@@ -882,14 +896,40 @@ if ($res_staffs) {
             document.getElementById(id).classList.remove('active');
         }
 
+        // Helper: Convert "8 am" or "08:00 AM" to "08:00" for <input type="time">
+        function parseTo24Hour(timeStr) {
+            if (!timeStr) return '';
+            const match = timeStr.trim().match(/^(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$/i);
+            if (!match) return '';
+
+            let hours = parseInt(match[1], 10);
+            const minutes = match[2] || '00';
+            const period = match[3] ? match[3].toLowerCase() : null;
+
+            if (period === 'pm' && hours < 12) hours += 12;
+            if (period === 'am' && hours === 12) hours = 0;
+
+            return String(hours).padStart(2, '0') + ':' + minutes;
+        }
+
         // Pre-fill Edit Outlet Modal
         function openEditOutletModal(outlet) {
             document.getElementById('edit_outlet_id').value = outlet.outlet_id;
             document.getElementById('edit_outlet_name').value = outlet.outlet_name;
             document.getElementById('edit_location').value = outlet.location || outlet.location_description || '';
             document.getElementById('edit_contact_number').value = outlet.contact_number || '';
-            document.getElementById('edit_operating_hours').value = outlet.operating_hours || '';
             document.getElementById('edit_status').value = outlet.status || 'Active';
+
+            // Split "08:00 AM - 10:00 PM" into Open and Close time inputs
+            let openVal = '', closeVal = '';
+            if (outlet.operating_hours && outlet.operating_hours.includes('-')) {
+                const parts = outlet.operating_hours.split('-');
+                openVal = parseTo24Hour(parts[0]);
+                closeVal = parseTo24Hour(parts[1]);
+            }
+            document.getElementById('edit_open_time').value = openVal;
+            document.getElementById('edit_close_time').value = closeVal;
+
             openModal('editOutletModal');
         }
 
