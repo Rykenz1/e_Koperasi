@@ -4,7 +4,7 @@
 require_once 'db_connect.php';
 
 $error = "";
-n 
+
 // 2. Handle Form Submission
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
     $login_id = trim($_POST['login_id']); // Accepts either email or username
