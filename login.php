@@ -36,7 +36,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 if ($user['role'] === 'Admin') {
                     header("Location: admin_dashboard.php");
                 } elseif ($user['role'] === 'Staff') {
-                    header("Location: staff_dashboard.php");
+                    header("Location: outlet_dashboard.php");
                 } else {
                     // $message = "Welcome to my site!";
                     // echo "<script>alert('$message');</script>";
