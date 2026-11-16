@@ -590,6 +590,59 @@ if ($res_staffs) {
         .btn-submit:hover {
             background-color: var(--accent-blue);
         }
+
+        /* LOGOUT */
+        .logout-modal-box {
+            max-width: 340px;
+            text-align: center;
+            padding: 28px 24px;
+        }
+
+        .logout-modal-box p {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-dark);
+            margin-bottom: 22px;
+        }
+
+        .logout-actions {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 24px;
+        }
+
+        .btn-cancel-link {
+            background: none;
+            border: none;
+            color: var(--primary-blue);
+            text-decoration: underline;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            padding: 6px;
+        }
+
+        .btn-cancel-link:hover {
+            color: var(--accent-blue);
+        }
+
+        .btn-confirm-logout {
+            background-color: #EF4444;
+            color: #000000;
+            text-decoration: none;
+            padding: 9px 22px;
+            border-radius: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .btn-confirm-logout:hover {
+            background-color: #DC2626;
+        }
     </style>
 </head>
 <body>
@@ -602,7 +655,8 @@ if ($res_staffs) {
         </div>
         <div class="topbar-right">
             <span>Welcome, <?php echo htmlspecialchars($_SESSION['fullname']); ?></span>
-            <a href="logout.php" class="logout-btn">Logout</a>
+            <button type="button" class="logout-btn" onclick="openModal('logoutModal')">Logout</button>
+            <!-- <a href="logout.php" class="logout-btn">Logout</a> -->
         </div>
     </header>
 
@@ -862,6 +916,17 @@ if ($res_staffs) {
                 </div>
                 <button type="submit" class="btn-submit">Create Account</button>
             </form>
+        </div>
+    </div>
+
+    <!-- MODAL 4: LOGOUT CONFIRMATION -->
+    <div class="modal-overlay" id="logoutModal">
+        <div class="modal-box logout-modal-box">
+            <p>Confirm logout?</p>
+            <div class="logout-actions">
+                <button type="button" class="btn-cancel-link" onclick="closeModal('logoutModal')">Cancel</button>
+                <a href="logout.php" class="btn-confirm-logout">Logout</a>
+            </div>
         </div>
     </div>
 
