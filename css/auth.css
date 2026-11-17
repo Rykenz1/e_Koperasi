@@ -1,0 +1,118 @@
+/* ==========================================================================
+   e-Koperasi - Authentication Pages
+   Shared by login.php and register.php. Self-contained on purpose: these
+   pages do not load style.css, so their .form-group / label rules cannot
+   clash with the dashboard ones.
+   ========================================================================== */
+
+:root {
+    --primary-blue: #0047AB;
+    --accent-blue: #0066CC;
+    --text-dark: #333333;
+    --text-muted: #555555;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Arial, sans-serif;
+    background-color: #f4f6f9;
+    color: var(--text-dark);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+}
+
+/* Centered card shared by both pages */
+.auth-container {
+    background: #ffffff;
+    padding: 30px;
+    border-radius: 8px;
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    max-width: 400px;
+}
+
+.auth-container h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    text-align: center;
+    color: var(--text-dark);
+}
+
+.auth-container .form-group {
+    margin-bottom: 15px;
+}
+
+.auth-container label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+    color: var(--text-muted);
+}
+
+.auth-container input[type="text"],
+.auth-container input[type="email"],
+.auth-container input[type="tel"],
+.auth-container input[type="password"] {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+.auth-container input:focus {
+    outline: none;
+    border-color: var(--primary-blue);
+}
+
+.auth-container button {
+    width: 100%;
+    padding: 10px;
+    background-color: var(--primary-blue);
+    border: none;
+    border-radius: 4px;
+    color: #ffffff;
+    font-size: 16px;
+    cursor: pointer;
+}
+
+.auth-container button:hover {
+    background-color: var(--accent-blue);
+}
+
+/* Alerts */
+.auth-container .alert {
+    padding: 10px;
+    margin-bottom: 15px;
+    border-radius: 4px;
+    text-align: center;
+}
+
+.auth-container .alert-error {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.auth-container .alert-success {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+/* Footer link */
+.auth-link {
+    text-align: center;
+    margin-top: 15px;
+    font-size: 14px;
+}
+
+.auth-link a {
+    color: var(--primary-blue);
+    font-weight: 600;
+}

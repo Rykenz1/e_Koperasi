@@ -1,0 +1,182 @@
+/* ==========================================================================
+   e-Koperasi - Shared Dashboard Chrome
+   Topbar, collapsible sidebar and main content shell.
+   Used by admin_dashboard.php and outlet_dashboard.php.
+   ========================================================================== */
+
+/* Top Blue Header Bar */
+.topbar {
+    height: 60px;
+    background-color: var(--primary-blue);
+    color: var(--white);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 20px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1000;
+    box-shadow: 0 2px 6px rgba(0, 71, 171, 0.2);
+}
+
+.topbar-left {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.topbar-right {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    font-size: 14px;
+}
+
+.toggle-btn {
+    background: none;
+    border: none;
+    color: var(--white);
+    font-size: 22px;
+    cursor: pointer;
+    padding: 6px 10px;
+    border-radius: 6px;
+    transition: background 0.2s;
+}
+
+.toggle-btn:hover {
+    background-color: rgba(255, 255, 255, 0.15);
+}
+
+.brand-title {
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+}
+
+.logout-btn {
+    background-color: var(--white);
+    color: var(--primary-blue);
+    border: none;
+    text-decoration: none;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.logout-btn:hover {
+    background-color: var(--light-blue-bg);
+}
+
+/* Layout Wrapper */
+.layout-wrapper {
+    display: flex;
+    margin-top: 60px;
+    min-height: calc(100vh - 60px);
+}
+
+/* Collapsible Sidebar */
+.sidebar {
+    width: var(--sidebar-width);
+    background-color: var(--light-blue-bg);
+    border-right: 1px solid #D6E4FF;
+    padding-top: 25px;
+    transition: width 0.25s ease;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.sidebar.collapsed {
+    width: var(--sidebar-collapsed);
+}
+
+.sidebar.collapsed .nav-text {
+    display: none;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 22px;
+    color: var(--text-dark);
+    text-decoration: none;
+    font-size: 16px;
+    font-weight: 500;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.nav-item:hover {
+    background-color: #DCE8F8;
+    color: var(--primary-blue);
+}
+
+.nav-item.active {
+    background-color: var(--primary-blue);
+    color: var(--white);
+    font-weight: 600;
+}
+
+.nav-icon {
+    font-size: 19px;
+    min-width: 24px;
+    text-align: center;
+}
+
+/* Main Content Area */
+.main-content {
+    flex-grow: 1;
+    padding: 35px 45px 100px 45px;
+    background-color: var(--white);
+    position: relative;
+}
+
+/* Card */
+.item-card {
+    background-color: var(--card-blue);
+    border: 1px solid #D0E1F9;
+    border-radius: 14px;
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    transition: background-color 0.2s, box-shadow 0.2s;
+    position: relative;
+}
+
+.item-card:hover {
+    background-color: var(--card-hover);
+    box-shadow: 0 3px 10px rgba(0, 71, 171, 0.08);
+}
+
+/* Floating '+' Button (Bottom Right) */
+.fab-add {
+    position: fixed;
+    bottom: 32px;
+    right: 36px;
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    background-color: var(--primary-blue);
+    color: var(--white);
+    border: none;
+    font-size: 32px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 71, 171, 0.35);
+    transition: transform 0.2s, background-color 0.2s;
+    z-index: 900;
+}
+
+.fab-add:hover {
+    background-color: var(--accent-blue);
+    transform: scale(1.06);
+}
