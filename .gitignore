@@ -425,10 +425,11 @@ FodyWeavers.xsd
 *.msp
 
 # User custom file
-build.sh
+*.sh
 something.php
 db_connect.php
 *.sql
+uploads/
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
