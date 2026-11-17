@@ -1,6 +1,7 @@
 <?php
 // outlet_dashboard.php
-require_once 'db_connect.php';
+require_once 'includes/db_connect.php';
+require_once 'includes/upload_image.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -39,6 +40,9 @@ if (!in_array($active_tab, ['inventory', 'orders', 'logs'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
+    // Tracks a newly uploaded file so it can be removed if the DB write fails.
+    $uploaded_image_to_cleanup = null;
+
     try {
         // --- ADD NEW PRODUCT & LINK TO OUTLET_INVENTORY ---
         if ($action === 'add_product') {
@@ -49,12 +53,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $reorder_level  = max(0, intval($_POST['reorder_level']));
             $status         = ($_POST['status'] === 'Inactive') ? 'Inactive' : 'Active';
 
-            if (!empty($product_name) && $price >= 0) {
+            $upload = save_product_image($_FILES['product_image'] ?? []);
+
+            if (!$upload['ok']) {
+                $message  = $upload['error'];
+                $msg_type = "error";
+            } elseif (!empty($product_name) && $price >= 0) {
+                $uploaded_image_to_cleanup = $upload['path'];
+                $image_url = $upload['path'] ?? PRODUCT_IMAGE_DEFAULT;
+
                 $conn->begin_transaction();
 
                 // 1. Insert into master `product` catalog
-                $stmt = $conn->prepare("INSERT INTO product (category_id, product_name, price) VALUES (?, ?, ?)");
-                $stmt->bind_param("isd", $category_id, $product_name, $price);
+                $stmt = $conn->prepare("INSERT INTO product (category_id, product_name, price, image_url) VALUES (?, ?, ?, ?)");
+                $stmt->bind_param("isds", $category_id, $product_name, $price, $image_url);
                 $stmt->execute();
                 $new_product_id = $conn->insert_id;
                 $stmt->close();
@@ -127,23 +139,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $reorder_level = max(0, intval($_POST['reorder_level']));
             $status        = ($_POST['status'] === 'Inactive') ? 'Inactive' : 'Active';
 
-            $conn->begin_transaction();
+            $upload = save_product_image($_FILES['product_image'] ?? []);
 
-            // Update master product details
-            $stmt = $conn->prepare("UPDATE product SET category_id = ?, product_name = ?, price = ? WHERE product_id = ?");
-            $stmt->bind_param("isdi", $category_id, $product_name, $price, $product_id);
-            $stmt->execute();
-            $stmt->close();
+            if (!$upload['ok']) {
+                $message  = $upload['error'];
+                $msg_type = "error";
+            } else {
+                // Remember the current photo so it can be replaced cleanly.
+                $current_image = null;
+                $get = $conn->prepare("SELECT image_url FROM product WHERE product_id = ?");
+                $get->bind_param("i", $product_id);
+                $get->execute();
+                $row = $get->get_result()->fetch_assoc();
+                $get->close();
+                $current_image = $row['image_url'] ?? null;
 
-            // Update outlet-specific reorder level & availability
-            $inv = $conn->prepare("UPDATE outlet_inventory SET reorder_level = ?, status = ? WHERE outlet_id = ? AND product_id = ?");
-            $inv->bind_param("isii", $reorder_level, $status, $outlet_id, $product_id);
-            $inv->execute();
-            $inv->close();
+                $uploaded_image_to_cleanup = $upload['path'];
+                $image_url = $upload['path'] ?? $current_image ?? PRODUCT_IMAGE_DEFAULT;
 
-            $conn->commit();
-            $message = "Item '$product_name' updated successfully.";
-            $msg_type = "success";
+                $conn->begin_transaction();
+
+                // Update master product details
+                $stmt = $conn->prepare("UPDATE product SET category_id = ?, product_name = ?, price = ?, image_url = ? WHERE product_id = ?");
+                $stmt->bind_param("isdsi", $category_id, $product_name, $price, $image_url, $product_id);
+                $stmt->execute();
+                $stmt->close();
+
+                // Update outlet-specific reorder level & availability
+                $inv = $conn->prepare("UPDATE outlet_inventory SET reorder_level = ?, status = ? WHERE outlet_id = ? AND product_id = ?");
+                $inv->bind_param("isii", $reorder_level, $status, $outlet_id, $product_id);
+                $inv->execute();
+                $inv->close();
+
+                $conn->commit();
+
+                // Only drop the old file once the new path is safely committed.
+                if ($upload['path'] !== null) {
+                    delete_product_image($current_image);
+                }
+
+                $message = "Item '$product_name' updated successfully.";
+                $msg_type = "success";
+            }
             $active_tab = 'inventory';
         }
 
@@ -243,6 +280,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if ($conn->in_transaction) {
             $conn->rollback();
         }
+        // If the DB write failed, don't leave the new image behind as an orphan.
+        if ($uploaded_image_to_cleanup !== null) {
+            delete_product_image($uploaded_image_to_cleanup);
+        }
         $message = "Database Error: " . $e->getMessage();
         $msg_type = "error";
     }
@@ -260,7 +301,7 @@ if ($res_cat) {
 // 4. Fetch THIS Outlet's Inventory via JOIN (`outlet_inventory` + `product` + `category`)
 $products = [];
 $stmt_prod = $conn->prepare("
-    SELECT p.product_id, p.category_id, p.product_name, p.price,
+    SELECT p.product_id, p.category_id, p.product_name, p.price, p.image_url,
            c.category_name,
            oi.stock_quantity, oi.reorder_level, oi.status
     FROM outlet_inventory oi
@@ -352,148 +393,9 @@ if ($stmt_log) {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Outlet Dashboard - <?php echo htmlspecialchars($outlet_name); ?></title>
-    <style>
-        :root {
-            --primary-blue: #0047AB;
-            --accent-blue: #0066CC;
-            --light-blue-bg: #F0F5FF;
-            --card-blue: #EBF2FA;
-            --card-hover: #DCE8F8;
-            --white: #FFFFFF;
-            --text-dark: #1E293B;
-            --text-muted: #64748B;
-            --sidebar-width: 230px;
-            --sidebar-collapsed: 68px;
-        }
-
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', Arial, sans-serif; }
-
-        body { background-color: var(--white); color: var(--text-dark); display: flex; flex-direction: column; min-height: 100vh; }
-
-        /* Top Royal Blue Bar */
-        .topbar {
-            height: 60px; background-color: var(--primary-blue); color: var(--white);
-            display: flex; align-items: center; justify-content: space-between;
-            padding: 0 20px; position: fixed; top: 0; left: 0; right: 0; z-index: 1000;
-            box-shadow: 0 2px 6px rgba(0, 71, 171, 0.2);
-        }
-        .topbar-left { display: flex; align-items: center; gap: 15px; }
-        .toggle-btn { background: none; border: none; color: var(--white); font-size: 22px; cursor: pointer; padding: 6px 10px; border-radius: 6px; }
-        .toggle-btn:hover { background-color: rgba(255, 255, 255, 0.15); }
-        .brand-title { font-size: 18px; font-weight: 600; }
-        .outlet-pill { background: rgba(255, 255, 255, 0.18); padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 500; }
-        .topbar-right { display: flex; align-items: center; gap: 15px; font-size: 14px; }
-        .logout-btn { background-color: var(--white); color: var(--primary-blue); border: none; padding: 6px 14px; border-radius: 6px; font-weight: 600; font-size: 13px; cursor: pointer; }
-        .logout-btn:hover { background-color: var(--light-blue-bg); }
-
-        /* Layout & Collapsible Sidebar */
-        .layout-wrapper { display: flex; margin-top: 60px; min-height: calc(100vh - 60px); }
-        .sidebar { width: var(--sidebar-width); background-color: var(--light-blue-bg); border-right: 1px solid #D6E4FF; padding-top: 25px; transition: width 0.25s ease; overflow: hidden; flex-shrink: 0; }
-        .sidebar.collapsed { width: var(--sidebar-collapsed); }
-        .nav-item { display: flex; align-items: center; gap: 14px; padding: 14px 22px; color: var(--text-dark); text-decoration: none; font-size: 16px; font-weight: 500; white-space: nowrap; }
-        .nav-item:hover { background-color: #DCE8F8; color: var(--primary-blue); }
-        .nav-item.active { background-color: var(--primary-blue); color: var(--white); font-weight: 600; }
-        .nav-icon { font-size: 19px; min-width: 24px; text-align: center; }
-        .sidebar.collapsed .nav-text { display: none; }
-
-        /* Main Content */
-        .main-content { flex-grow: 1; padding: 32px 44px 100px 44px; background-color: var(--white); position: relative; }
-        .header-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px; max-width: 960px; margin-bottom: 22px; }
-        .page-title { font-size: 28px; font-weight: 700; color: var(--primary-blue); }
-
-        /* Summary Pills & Toolbar */
-        .stats-bar { display: flex; gap: 12px; flex-wrap: wrap; max-width: 960px; margin-bottom: 20px; }
-        .stat-chip { background: var(--light-blue-bg); border: 1px solid #D0E1F9; padding: 10px 16px; border-radius: 10px; font-size: 14px; font-weight: 600; color: var(--primary-blue); }
-        .stat-chip.warn { background: #FEF3C7; border-color: #FDE68A; color: #92400E; }
-        .stat-chip.danger { background: #FEE2E2; border-color: #FECACA; color: #991B1B; }
-
-        .toolbar { display: flex; gap: 12px; flex-wrap: wrap; max-width: 960px; margin-bottom: 20px; }
-        .search-input { flex: 1; min-width: 220px; padding: 10px 14px; border: 1px solid #CBD5E1; border-radius: 8px; font-size: 14px; }
-        .search-input:focus { outline: none; border-color: var(--primary-blue); }
-        .filter-btn { padding: 9px 15px; border: 1px solid #CBD5E1; background: var(--white); color: var(--text-dark); border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; }
-        .filter-btn.active { background: var(--primary-blue); color: var(--white); border-color: var(--primary-blue); }
-
-        /* Alerts */
-        .alert { padding: 12px 18px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; max-width: 960px; }
-        .alert-success { background-color: #E6F4EA; color: #137333; border: 1px solid #CEEAD6; }
-        .alert-error { background-color: #FCE8E6; color: #C5221F; border: 1px solid #FAD2CF; }
-
-        /* Cards */
-        .card-list { display: flex; flex-direction: column; gap: 14px; max-width: 960px; }
-        .item-card { background-color: var(--card-blue); border: 1px solid #D0E1F9; border-radius: 14px; padding: 18px 22px; display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-        .item-card:hover { background-color: var(--card-hover); box-shadow: 0 3px 10px rgba(0, 71, 171, 0.08); }
-        .item-card.inactive-card { opacity: 0.68; background-color: #F1F5F9; border-color: #CBD5E1; }
-        .item-info h3 { font-size: 17px; color: var(--text-dark); margin-bottom: 5px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-        .item-info p { font-size: 14px; color: var(--text-muted); }
-        .card-actions { display: flex; align-items: center; gap: 10px; }
-
-        .btn-quick { background-color: var(--primary-blue); color: var(--white); border: none; padding: 8px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-        .btn-quick:hover { background-color: var(--accent-blue); }
-        .btn-outline { background-color: var(--white); color: var(--primary-blue); border: 1px solid #B6D0F5; padding: 7px 12px; border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
-        .btn-outline:hover { background-color: var(--light-blue-bg); }
-
-        /* Badges */
-        .badge { font-size: 12px; padding: 3px 9px; border-radius: 12px; font-weight: 600; }
-        .badge-active { background-color: #D1FAE5; color: #065F46; }
-        .badge-inactive { background-color: #E2E8F0; color: #475569; }
-        .badge-low { background-color: #FEF3C7; color: #92400E; }
-        .badge-out { background-color: #FEE2E2; color: #991B1B; }
-        .badge-cat { background-color: #DBEAFE; color: #1E40AF; }
-
-        /* 3-Dot Menu */
-        .menu-wrapper { position: relative; }
-        .dots-btn { background: none; border: none; cursor: pointer; padding: 8px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
-        .dots-btn:hover { background-color: rgba(0, 71, 171, 0.12); }
-        .dot { width: 5px; height: 5px; background-color: var(--primary-blue); border-radius: 50%; }
-        .dropdown-menu { display: none; position: absolute; right: 0; top: 38px; background-color: var(--white); border: 1px solid #D0E1F9; border-radius: 8px; box-shadow: 0 6px 16px rgba(0, 0, 0, 0.12); min-width: 175px; z-index: 500; overflow: hidden; }
-        .dropdown-menu.show { display: block; }
-        .dropdown-item { width: 100%; text-align: left; background: none; border: none; padding: 11px 16px; font-size: 14px; color: var(--text-dark); cursor: pointer; display: block; }
-        .dropdown-item:hover { background-color: var(--light-blue-bg); color: var(--primary-blue); }
-        .dropdown-item.delete { color: #DC2626; }
-        .dropdown-item.delete:hover { background-color: #FEF2F2; }
-
-        /* Floating '+' Button */
-        .fab-add {
-            position: fixed; bottom: 32px; right: 36px; width: 60px; height: 60px; border-radius: 50%;
-            background-color: var(--primary-blue); color: var(--white); border: none; font-size: 32px;
-            display: flex; align-items: center; justify-content: center; cursor: pointer;
-            box-shadow: 0 4px 14px rgba(0, 71, 171, 0.35); z-index: 900;
-        }
-        .fab-add:hover { background-color: var(--accent-blue); transform: scale(1.06); }
-
-        /* Log Table */
-        .log-table { width: 100%; max-width: 960px; border-collapse: collapse; background: var(--white); border: 1px solid #D0E1F9; border-radius: 12px; overflow: hidden; font-size: 14px; }
-        .log-table th { background: var(--primary-blue); color: var(--white); text-align: left; padding: 12px 16px; }
-        .log-table td { padding: 12px 16px; border-bottom: 1px solid #E2E8F0; }
-        .log-table tr:nth-child(even) { background: #F8FAFC; }
-
-        /* Modals */
-        .modal-overlay { display: none; position: fixed; inset: 0; background-color: rgba(15, 23, 42, 0.45); z-index: 2000; align-items: center; justify-content: center; }
-        .modal-overlay.active { display: flex; }
-        .modal-box { background-color: var(--white); border-radius: 12px; width: 100%; max-width: 450px; padding: 26px; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2); }
-        .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; border-bottom: 1px solid #E2E8F0; padding-bottom: 10px; }
-        .modal-header h2 { font-size: 19px; color: var(--primary-blue); }
-        .close-modal { background: none; border: none; font-size: 22px; color: var(--text-muted); cursor: pointer; }
-        .form-group { margin-bottom: 14px; }
-        .form-group label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px; color: var(--text-dark); }
-        .form-group input, .form-group select { width: 100%; padding: 9px 12px; border: 1px solid #CBD5E1; border-radius: 6px; font-size: 14px; }
-        .form-group input:focus, .form-group select:focus { outline: none; border-color: var(--primary-blue); }
-        .btn-submit { width: 100%; padding: 11px; background-color: var(--primary-blue); color: var(--white); border: none; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; margin-top: 6px; }
-        .btn-submit:hover { background-color: var(--accent-blue); }
-
-        /* Modal Mode Switcher Tabs */
-        .modal-tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-        .modal-tab-btn { flex: 1; padding: 8px; border: 1px solid #CBD5E1; background: #F8FAFC; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; color: var(--text-dark); }
-        .modal-tab-btn.active { background: var(--primary-blue); color: var(--white); border-color: var(--primary-blue); }
-
-        /* Logout Confirmation Modal */
-        .logout-modal-box { max-width: 340px; text-align: center; padding: 28px 24px; }
-        .logout-modal-box p { font-size: 18px; font-weight: 600; color: var(--text-dark); margin-bottom: 22px; }
-        .logout-actions { display: flex; align-items: center; justify-content: center; gap: 24px; }
-        .btn-cancel-link { background: none; border: none; color: var(--primary-blue); text-decoration: underline; font-size: 15px; font-weight: 500; cursor: pointer; padding: 6px; }
-        .btn-confirm-logout { background-color: #EF4444; color: #000000; text-decoration: none; padding: 9px 22px; border-radius: 8px; font-size: 15px; font-weight: 600; border: none; cursor: pointer; }
-        .btn-confirm-logout:hover { background-color: #DC2626; }
-    </style>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/dashboard.css">
+    <link rel="stylesheet" href="css/outlet.css">
 </head>
 <body>
 
@@ -565,25 +467,31 @@ if ($stmt_log) {
                                  data-name="<?php echo strtolower(htmlspecialchars($p['product_name'] . ' ' . ($p['category_name'] ?? ''))); ?>"
                                  data-stock="<?php echo $stock_state; ?>"
                                  data-status="<?php echo strtolower($p['status']); ?>">
-                                <div class="item-info">
-                                    <h3>
-                                        <?php echo htmlspecialchars($p['product_name']); ?>
-                                        <?php if (!empty($p['category_name'])): ?>
-                                            <span class="badge badge-cat"><?php echo htmlspecialchars($p['category_name']); ?></span>
-                                        <?php endif; ?>
-                                        <span class="badge <?php echo $is_active ? 'badge-active' : 'badge-inactive'; ?>">
-                                            <?php echo $is_active ? 'Available' : 'Unavailable'; ?>
-                                        </span>
-                                        <?php if ($qty === 0): ?>
-                                            <span class="badge badge-out">Out of Stock</span>
-                                        <?php elseif ($qty <= $reorder): ?>
-                                            <span class="badge badge-low">Low Stock (&le;<?php echo $reorder; ?>)</span>
-                                        <?php endif; ?>
-                                    </h3>
-                                    <p>
-                                        Price: <strong>RM <?php echo number_format($p['price'], 2); ?></strong> &bull;
-                                        Branch Stock: <strong><?php echo $qty; ?> units</strong>
-                                    </p>
+                                <div class="item-main">
+                                    <img class="item-thumb"
+                                         src="<?php echo htmlspecialchars($p['image_url'] ?: PRODUCT_IMAGE_DEFAULT); ?>"
+                                         alt="<?php echo htmlspecialchars($p['product_name']); ?>"
+                                         onerror="this.onerror=null;this.src='<?php echo PRODUCT_IMAGE_DEFAULT; ?>';">
+                                    <div class="item-info">
+                                        <h3>
+                                            <?php echo htmlspecialchars($p['product_name']); ?>
+                                            <?php if (!empty($p['category_name'])): ?>
+                                                <span class="badge badge-cat"><?php echo htmlspecialchars($p['category_name']); ?></span>
+                                            <?php endif; ?>
+                                            <span class="badge <?php echo $is_active ? 'badge-active' : 'badge-inactive'; ?>">
+                                                <?php echo $is_active ? 'Available' : 'Unavailable'; ?>
+                                            </span>
+                                            <?php if ($qty === 0): ?>
+                                                <span class="badge badge-out">Out of Stock</span>
+                                            <?php elseif ($qty <= $reorder): ?>
+                                                <span class="badge badge-low">Low Stock (&le;<?php echo $reorder; ?>)</span>
+                                            <?php endif; ?>
+                                        </h3>
+                                        <p>
+                                            Price: <strong>RM <?php echo number_format($p['price'], 2); ?></strong> &bull;
+                                            Branch Stock: <strong><?php echo $qty; ?> units</strong>
+                                        </p>
+                                    </div>
                                 </div>
 
                                 <div class="card-actions">
@@ -696,7 +604,6 @@ if ($stmt_log) {
                                         <?php echo ($log['quantity_changed'] > 0 ? '+' : '') . $log['quantity_changed']; ?>
                                     </td>
                                     <td><?php echo htmlspecialchars($log['staff_name']); ?></td>
-                                    <td>@<?php echo htmlspecialchars($log['staff_username']); ?></td>
                                     <td><?php echo htmlspecialchars($log['remarks'] ?? '-'); ?></td>
                                 </tr>
                             <?php endforeach; ?>
@@ -723,11 +630,23 @@ if ($stmt_log) {
             <?php endif; ?>
 
             <!-- Form A: Create New Master Product + Link to Outlet -->
-            <form method="POST" id="newProductForm">
+            <form method="POST" id="newProductForm" enctype="multipart/form-data">
                 <input type="hidden" name="action" value="add_product">
                 <div class="form-group">
                     <label>Product Name *</label>
                     <input type="text" name="product_name" placeholder="e.g., Mineral Water 500ml" required>
+                </div>
+                <div class="form-group">
+                    <label>Product Image</label>
+                    <div class="dropzone" id="addProductDropzone" data-dropzone tabindex="0" role="button"
+                         aria-label="Upload product image">
+                        <input type="file" name="product_image" accept="image/jpeg,image/png,image/webp" hidden>
+                        <div class="dropzone-preview">
+                            <img alt="Product image preview">
+                            <span class="dropzone-hint">Drag &amp; drop an image here, or click to browse</span>
+                        </div>
+                    </div>
+                    <small class="form-hint">JPG, PNG or WEBP &middot; max 5 MB</small>
                 </div>
                 <div class="form-group">
                     <label>Category *</label>
@@ -813,12 +732,24 @@ if ($stmt_log) {
                 <h2>Edit Inventory Item</h2>
                 <button class="close-modal" onclick="closeModal('editProductModal')">&times;</button>
             </div>
-            <form method="POST">
+            <form method="POST" enctype="multipart/form-data">
                 <input type="hidden" name="action" value="edit_product">
                 <input type="hidden" name="product_id" id="edit_product_id">
                 <div class="form-group">
                     <label>Product Name *</label>
                     <input type="text" name="product_name" id="edit_product_name" required>
+                </div>
+                <div class="form-group">
+                    <label>Product Image</label>
+                    <div class="dropzone" id="editProductDropzone" data-dropzone tabindex="0" role="button"
+                         aria-label="Replace product image">
+                        <input type="file" name="product_image" accept="image/jpeg,image/png,image/webp" hidden>
+                        <div class="dropzone-preview">
+                            <img alt="Product image preview">
+                            <span class="dropzone-hint">Drag &amp; drop a new image to replace the current one</span>
+                        </div>
+                    </div>
+                    <small class="form-hint">JPG, PNG or WEBP &middot; max 5 MB &middot; leave empty to keep the current photo</small>
                 </div>
                 <div class="form-group">
                     <label>Category *</label>
@@ -897,81 +828,9 @@ if ($stmt_log) {
         </div>
     </div>
 
-    <script>
-        document.getElementById('sidebarToggle').addEventListener('click', () => {
-            document.getElementById('sidebar').classList.toggle('collapsed');
-        });
-
-        function toggleMenu(event, menuId) {
-            event.stopPropagation();
-            document.querySelectorAll('.dropdown-menu').forEach(m => {
-                if (m.id !== menuId) m.classList.remove('show');
-            });
-            document.getElementById(menuId).classList.toggle('show');
-        }
-
-        window.addEventListener('click', () => {
-            document.querySelectorAll('.dropdown-menu').forEach(m => m.classList.remove('show'));
-        });
-
-        function openModal(id) { document.getElementById(id).classList.add('active'); }
-        function closeModal(id) { document.getElementById(id).classList.remove('active'); }
-
-        function switchAddMode(mode) {
-            const newForm = document.getElementById('newProductForm');
-            const exForm = document.getElementById('existingProductForm');
-            const tabNew = document.getElementById('tabNewBtn');
-            const tabEx = document.getElementById('tabExistingBtn');
-
-            if (mode === 'existing' && exForm) {
-                newForm.style.display = 'none';
-                exForm.style.display = 'block';
-                tabNew.classList.remove('active');
-                tabEx.classList.add('active');
-            } else {
-                newForm.style.display = 'block';
-                if (exForm) exForm.style.display = 'none';
-                tabNew.classList.add('active');
-                if (tabEx) tabEx.classList.remove('active');
-            }
-        }
-
-        function openEditProductModal(product) {
-            document.getElementById('edit_product_id').value = product.product_id;
-            document.getElementById('edit_product_name').value = product.product_name;
-            document.getElementById('edit_category_id').value = product.category_id;
-            document.getElementById('edit_price').value = product.price;
-            document.getElementById('edit_reorder_level').value = product.reorder_level;
-            document.getElementById('edit_status').value = product.status;
-            openModal('editProductModal');
-        }
-
-        function openStockModal(product) {
-            document.getElementById('stock_product_id').value = product.product_id;
-            document.getElementById('stock_product_label').textContent = product.product_name;
-            document.getElementById('stock_current_qty').textContent = product.stock_quantity;
-            openModal('stockModal');
-        }
-
-        let currentStockFilter = 'all';
-        function setStockFilter(filter, btn) {
-            currentStockFilter = filter;
-            document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            filterInventory();
-        }
-
-        function filterInventory() {
-            const query = document.getElementById('inventorySearch').value.toLowerCase();
-            document.querySelectorAll('#inventoryList .item-card').forEach(card => {
-                const nameMatch = card.dataset.name.includes(query);
-                let filterMatch = true;
-                if (currentStockFilter === 'low') filterMatch = (card.dataset.stock === 'low');
-                else if (currentStockFilter === 'out') filterMatch = (card.dataset.stock === 'out');
-                else if (currentStockFilter === 'inactive') filterMatch = (card.dataset.status === 'inactive');
-                card.style.display = (nameMatch && filterMatch) ? 'flex' : 'none';
-            });
-        }
-    </script>
+    <script src="js/main.js"></script>
+    <script src="js/upload.js"></script>
+    <script src="js/dashboard.js"></script>
+    <script src="js/outlet.js"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 <?php
 
 // login.php
-require_once 'db_connect.php';
+require_once 'includes/db_connect.php';
 
 $error = "";
 
@@ -62,82 +62,15 @@ $conn->close();
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - e-Koperasi</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #f4f6f9;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-        }
-        .login-container {
-            background: #ffffff;
-            padding: 30px;
-            border-radius: 8px;
-            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.1);
-            width: 100%;
-            max-width: 400px;
-        }
-        h2 {
-            margin-top: 0;
-            text-align: center;
-            color: #333;
-        }
-        .form-group {
-            margin-bottom: 15px;
-        }
-        label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: bold;
-            color: #555;
-        }
-        input[type="text"],
-        input[type="password"] {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ccc;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-        button {
-            width: 100%;
-            padding: 10px;
-            background-color: #007bff;
-            border: none;
-            border-radius: 4px;
-            color: white;
-            font-size: 16px;
-            cursor: pointer;
-        }
-        button:hover {
-            background-color: #0056b3;
-        }
-        .alert-error {
-            background-color: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-            padding: 10px;
-            margin-bottom: 15px;
-            border-radius: 4px;
-            text-align: center;
-        }
-        .register-link {
-            text-align: center;
-            margin-top: 15px;
-            font-size: 14px;
-        }
-    </style>
+    <link rel="stylesheet" href="css/auth.css">
 </head>
 <body>
 
-<div class="login-container">
+<div class="auth-container">
     <h2>Login to e-Koperasi</h2>
 
     <?php if (!empty($error)): ?>
-        <div class="alert-error"><?php echo htmlspecialchars($error); ?></div>
+        <div class="alert alert-error"><?php echo htmlspecialchars($error); ?></div>
     <?php endif; ?>
 
     <form action="login.php" method="POST">
@@ -155,7 +88,7 @@ $conn->close();
         <button type="submit">Login</button>
     </form>
 
-    <div class="register-link">
+    <div class="auth-link">
         Don't have an account? <a href="register.php">Register here</a>
     </div>
 </div>

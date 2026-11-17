@@ -429,7 +429,13 @@ FodyWeavers.xsd
 something.php
 db_connect.php
 *.sql
-uploads/
+# Uploaded product images stay out of git, except the shared placeholder
+# and the hardening file that must exist on every deployment.
+uploads/*
+!uploads/products/
+uploads/products/*
+!uploads/products/default.png
+!uploads/products/.htaccess
 
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache
