@@ -27,6 +27,8 @@ function switchAddMode(mode) {
 
 // Pre-fill Edit Inventory Item modal
 function openEditProductModal(product) {
+    const grouped = parseInt(product.group_id, 10) > 0;
+
     document.getElementById('edit_product_id').value = product.product_id;
     document.getElementById('edit_product_name').value = product.product_name;
     document.getElementById('edit_category_id').value = product.category_id;
@@ -34,6 +36,18 @@ function openEditProductModal(product) {
     document.getElementById('edit_reorder_level').value = product.reorder_level;
     document.getElementById('edit_status').value = product.status;
     setDropzoneImage('editProductDropzone', product.image_url);
+
+    // Admin-managed variant: master fields are read-only at the outlet.
+    document.getElementById('edit_product_name').readOnly = grouped;
+    document.getElementById('edit_category_id').disabled = grouped;
+    document.getElementById('edit_price').readOnly = grouped;
+    const imageInput = document.querySelector('#editProductDropzone input[type="file"]');
+    if (imageInput) imageInput.disabled = grouped;
+    const dropzone = document.getElementById('editProductDropzone');
+    dropzone.style.opacity = grouped ? '0.6' : '';
+    dropzone.style.pointerEvents = grouped ? 'none' : '';
+    document.getElementById('edit_grouped_notice').style.display = grouped ? 'block' : 'none';
+
     openModal('editProductModal');
 }
 

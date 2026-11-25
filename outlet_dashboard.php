@@ -145,25 +145,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $message  = $upload['error'];
                 $msg_type = "error";
             } else {
-                // Remember the current photo so it can be replaced cleanly.
-                $current_image = null;
-                $get = $conn->prepare("SELECT image_url FROM product WHERE product_id = ?");
+                // Grouped variants have admin-managed master fields (name,
+                // category, price, image). Outlet staff only control branch stock
+                // settings, so the master row is left untouched for those items.
+                $get = $conn->prepare("SELECT image_url, group_id, product_name FROM product WHERE product_id = ?");
                 $get->bind_param("i", $product_id);
                 $get->execute();
                 $row = $get->get_result()->fetch_assoc();
                 $get->close();
-                $current_image = $row['image_url'] ?? null;
 
-                $uploaded_image_to_cleanup = $upload['path'];
-                $image_url = $upload['path'] ?? $current_image ?? PRODUCT_IMAGE_DEFAULT;
+                $is_grouped     = intval($row['group_id'] ?? 0) > 0;
+                $display_name   = $is_grouped ? ($row['product_name'] ?? '') : $product_name;
+                $current_image  = $row['image_url'] ?? null;
+                $image_url      = $upload['path'] ?? $current_image ?? PRODUCT_IMAGE_DEFAULT;
 
                 $conn->begin_transaction();
 
-                // Update master product details
-                $stmt = $conn->prepare("UPDATE product SET category_id = ?, product_name = ?, price = ?, image_url = ? WHERE product_id = ?");
-                $stmt->bind_param("isdsi", $category_id, $product_name, $price, $image_url, $product_id);
-                $stmt->execute();
-                $stmt->close();
+                if (!$is_grouped) {
+                    // Update master product details for standalone products.
+                    $stmt = $conn->prepare("UPDATE product SET category_id = ?, product_name = ?, price = ?, image_url = ? WHERE product_id = ?");
+                    $stmt->bind_param("isdsi", $category_id, $product_name, $price, $image_url, $product_id);
+                    $stmt->execute();
+                    $stmt->close();
+                }
 
                 // Update outlet-specific reorder level & availability
                 $inv = $conn->prepare("UPDATE outlet_inventory SET reorder_level = ?, status = ? WHERE outlet_id = ? AND product_id = ?");
@@ -173,12 +177,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 $conn->commit();
 
-                // Only drop the old file once the new path is safely committed.
-                if ($upload['path'] !== null) {
-                    delete_product_image($current_image);
+                if ($is_grouped) {
+                    // No master image was changed - discard any file uploaded.
+                    if ($upload['path'] !== null) {
+                        delete_product_image($upload['path']);
+                    }
+                    $message = "Branch settings for '$display_name' updated. Name, price and image are managed by the admin.";
+                } else {
+                    // Only drop the old file once the new path is safely committed.
+                    if ($upload['path'] !== null) {
+                        delete_product_image($current_image);
+                    }
+                    $message = "Item '$product_name' updated successfully.";
                 }
-
-                $message = "Item '$product_name' updated successfully.";
                 $msg_type = "success";
             }
             $active_tab = 'inventory';
@@ -301,12 +312,14 @@ if ($res_cat) {
 // 4. Fetch THIS Outlet's Inventory via JOIN (`outlet_inventory` + `product` + `category`)
 $products = [];
 $stmt_prod = $conn->prepare("
-    SELECT p.product_id, p.category_id, p.product_name, p.price, p.image_url,
-           c.category_name,
+    SELECT p.product_id, p.category_id, p.group_id, p.variant_name,
+           p.product_name, p.price, p.image_url,
+           c.category_name, g.group_name,
            oi.stock_quantity, oi.reorder_level, oi.status
     FROM outlet_inventory oi
     JOIN product p ON oi.product_id = p.product_id
     LEFT JOIN category c ON p.category_id = c.category_id
+    LEFT JOIN product_group g ON g.group_id = p.group_id
     WHERE oi.outlet_id = ?
     ORDER BY oi.status ASC, oi.stock_quantity ASC, p.product_name ASC
 ");
@@ -329,12 +342,14 @@ $stmt_prod->close();
 // 4b. Fetch Master Catalog Products NOT YET in THIS Outlet (for quick assignment)
 $unassigned_products = [];
 $stmt_unassigned = $conn->prepare("
-    SELECT p.product_id, p.product_name, p.price
+    SELECT p.product_id, p.product_name, p.price, p.group_id, p.variant_name,
+           g.group_name
     FROM product p
+    LEFT JOIN product_group g ON g.group_id = p.group_id
     WHERE p.product_id NOT IN (
         SELECT product_id FROM outlet_inventory WHERE outlet_id = ?
     )
-    ORDER BY p.product_name ASC
+    ORDER BY (g.group_name IS NULL) ASC, g.group_name ASC, p.product_name ASC
 ");
 if ($stmt_unassigned) {
     $stmt_unassigned->bind_param("i", $outlet_id);
@@ -344,6 +359,20 @@ if ($stmt_unassigned) {
         $unassigned_products[] = $row;
     }
     $stmt_unassigned->close();
+}
+
+// Group catalog options by variant family so flavours sit together in the picker.
+$catalog_options_ungrouped = [];
+$catalog_options_grouped   = [];
+foreach ($unassigned_products as $up) {
+    $option = '<option value="' . intval($up['product_id']) . '">' .
+              htmlspecialchars($up['product_name']) .
+              ' (RM ' . number_format($up['price'], 2) . ')</option>';
+    if (!empty($up['group_name'])) {
+        $catalog_options_grouped[$up['group_name']][] = $option;
+    } else {
+        $catalog_options_ungrouped[] = $option;
+    }
 }
 
 // 5. Fetch Active Orders for THIS Outlet
@@ -395,6 +424,7 @@ if ($stmt_log) {
     <title>Outlet Dashboard - <?php echo htmlspecialchars($outlet_name); ?></title>
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="css/dashboard.css">
+    <link rel="stylesheet" href="css/inventory.css">
     <link rel="stylesheet" href="css/outlet.css">
 </head>
 <body>
@@ -453,7 +483,7 @@ if ($stmt_log) {
                     <button type="button" class="filter-btn" onclick="setStockFilter('inactive', this)">Unavailable</button>
                 </div>
 
-                <div class="card-list" id="inventoryList">
+                <div class="card-list inventory-list" id="inventoryList">
                     <?php if (empty($products)): ?>
                         <p style="color: var(--text-muted);">No items assigned to <?php echo htmlspecialchars($outlet_name); ?> yet. Click <strong>+</strong> to add stock.</p>
                     <?php else: ?>
@@ -475,6 +505,9 @@ if ($stmt_log) {
                                     <div class="item-info">
                                         <h3>
                                             <?php echo htmlspecialchars($p['product_name']); ?>
+                                            <?php if (!empty($p['group_name'])): ?>
+                                                <span class="badge badge-group"><?php echo htmlspecialchars($p['group_name']); ?></span>
+                                            <?php endif; ?>
                                             <?php if (!empty($p['category_name'])): ?>
                                                 <span class="badge badge-cat"><?php echo htmlspecialchars($p['category_name']); ?></span>
                                             <?php endif; ?>
@@ -495,7 +528,7 @@ if ($stmt_log) {
                                 </div>
 
                                 <div class="card-actions">
-                                    <button type="button" class="btn-quick" onclick='openStockModal(<?php echo json_encode($p); ?>)'>
+                                    <button type="button" class="btn-quick" onclick='openStockModal(<?php echo json_encode($p, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
                                         &plusmn; Stock
                                     </button>
 
@@ -515,7 +548,7 @@ if ($stmt_log) {
                                             <span class="dot"></span>
                                         </button>
                                         <div class="dropdown-menu" id="menu-prod-<?php echo $p['product_id']; ?>">
-                                            <button type="button" class="dropdown-item" onclick='openEditProductModal(<?php echo json_encode($p); ?>)'>
+                                            <button type="button" class="dropdown-item" onclick='openEditProductModal(<?php echo json_encode($p, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>)'>
                                                 Edit Item
                                             </button>
                                             <form method="POST" onsubmit="return confirm('Remove <?php echo htmlspecialchars(addslashes($p['product_name'])); ?> from <?php echo htmlspecialchars(addslashes($outlet_name)); ?>?');">
@@ -695,11 +728,16 @@ if ($stmt_log) {
                     <div class="form-group">
                         <label>Select Master Catalog Product *</label>
                         <select name="product_id" required>
-                            <?php foreach ($unassigned_products as $up): ?>
-                                <option value="<?php echo $up['product_id']; ?>">
-                                    <?php echo htmlspecialchars($up['product_name']); ?> (RM <?php echo number_format($up['price'], 2); ?>)
-                                </option>
+                            <?php foreach ($catalog_options_grouped as $group_label => $options): ?>
+                                <optgroup label="<?php echo htmlspecialchars($group_label); ?>">
+                                    <?php echo implode('', $options); ?>
+                                </optgroup>
                             <?php endforeach; ?>
+                            <?php if ($catalog_options_ungrouped): ?>
+                                <optgroup label="Other Products">
+                                    <?php echo implode('', $catalog_options_ungrouped); ?>
+                                </optgroup>
+                            <?php endif; ?>
                         </select>
                     </div>
                     <div style="display: flex; gap: 12px;">
@@ -735,6 +773,10 @@ if ($stmt_log) {
             <form method="POST" enctype="multipart/form-data">
                 <input type="hidden" name="action" value="edit_product">
                 <input type="hidden" name="product_id" id="edit_product_id">
+                <div class="form-hint" id="edit_grouped_notice" style="display:none; margin-bottom:14px;">
+                    This is an admin-managed variant. Name, category, price and image are read-only here;
+                    you can still change reorder level and branch availability.
+                </div>
                 <div class="form-group">
                     <label>Product Name *</label>
                     <input type="text" name="product_name" id="edit_product_name" required>
