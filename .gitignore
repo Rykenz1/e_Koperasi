@@ -436,6 +436,7 @@ uploads/*
 uploads/products/*
 !uploads/products/default.png
 !uploads/products/.htaccess
-
+*.md
+!README.md
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache

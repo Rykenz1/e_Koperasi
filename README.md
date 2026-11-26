@@ -1,6 +1,55 @@
 # e_Koperasi
 
-CampusMart multi-outlet inventory & express pre-order system (LAMP stack, vanilla HTML/CSS/JS).
+e_Koperasi multi-outlet inventory and express pre-order system built with a LAMP
+stack and vanilla HTML/CSS/JS.
+
+## Features
+
+- Role-based login for `Admin`, `Staff`, and `Customer` accounts.
+- **Admin dashboard**
+  - Manage outlets and staff accounts.
+  - Master catalog with search and category/group/branch/stock filters.
+  - Product groups/variants (e.g. Fanta Orange, Fanta Grape), each variant with
+    its own price and image.
+  - Per-branch stock breakdown and branch-scoped inventory views.
+  - Master product, group, and variant management.
+- **Outlet dashboard**
+  - Outlet-scoped inventory, stock adjustment, reorder levels, and availability.
+  - Add standalone products or assign existing catalog products to the outlet.
+  - For grouped variants, master fields are admin-managed; staff edit only
+    branch stock settings.
+- Product image uploads with drag & drop and server-side validation.
+- Stock audit history (`inventory_transaction`) and low/out-of-stock indicators.
+
+## Requirements
+
+- PHP 8.2+ (local development uses the XAMPP build)
+- MariaDB 10.4+ or MySQL
+- Apache, or the PHP built-in server
+
+## Local setup (XAMPP on Linux)
+
+```bash
+# Start Apache + MariaDB
+sudo /opt/lampp/lampp start
+
+# Create and import the database (first time)
+/opt/lampp/bin/mysql -uroot -e \
+  "CREATE DATABASE IF NOT EXISTS e_koperasi_db CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci;"
+/opt/lampp/bin/mysql -uroot e_koperasi_db < e_koperasi_db.sql
+
+# Serve the app from the repository root
+/opt/lampp/bin/php -S localhost:8000
+```
+
+Open <http://localhost:8000/login.php>.
+
+Database defaults live in `includes/db_connect.php` and can be overridden with
+the `DB_HOST`, `DB_USER`, `DB_PASS`, and `DB_NAME` environment variables.
+
+> `includes/db_connect.php`, `e_koperasi_db.sql`, and `run_php.sh` are
+> intentionally gitignored. They exist locally but are not guaranteed in a
+> fresh clone, so keep them in sync with the schema and code.
 
 ## Project structure
 
@@ -9,48 +58,120 @@ e_Koperasi/
 ├── css/
 │   ├── style.css       # Shared theme: tokens, reset, alerts, badges, modal, forms
 │   ├── dashboard.css   # Shared dashboard chrome: topbar, sidebar, cards, FAB
-│   ├── outlet.css      # Outlet dashboard only (loads after the two above)
+│   ├── inventory.css   # Shared inventory cards, filters, badges, stock tables
+│   ├── outlet.css      # Outlet dashboard only (loads after the shared files)
 │   └── auth.css        # login.php + register.php (self-contained)
 ├── js/
 │   ├── main.js         # Shared helpers: openModal, closeModal, toggleMenu
+│   ├── upload.js       # Drag & drop image component for [data-dropzone]
 │   ├── dashboard.js    # Sidebar toggle (used by both dashboards)
 │   ├── admin.js        # admin_dashboard.php only
 │   └── outlet.js       # outlet_dashboard.php only
 ├── includes/
-│   └── db_connect.php  # DB connection + session_start()
-├── uploads/products/   # Uploaded product images
+│   ├── db_connect.php  # DB connection + session_start() (local, gitignored)
+│   └── upload_image.php # Image validation, storage, and deletion
+├── uploads/products/   # Uploaded product images (placeholder + .htaccess tracked)
 ├── login.php
 ├── register.php
 ├── logout.php
 ├── admin_dashboard.php
-└── outlet_dashboard.php
+├── outlet_dashboard.php
+├── e_koperasi_db.sql   # Local schema/data dump (gitignored)
+├── run_php.sh          # Local convenience launcher (gitignored)
+├── AGENTS.md           # Guidance for coding agents
+└── README.md
 ```
 
-### Conventions
+## Data model
 
-- **No inline `<style>` or `<script>` blocks.** Everything lives in `css/` and `js/`.
+Main tables:
+
+| Table | Purpose |
+| :--- | :--- |
+| `user` | Accounts, roles, and outlet assignment |
+| `outlet` | Branch details and operating hours |
+| `category` | Product categories |
+| `product_group` | Variant families such as "Fanta" |
+| `product` | Catalog products and variants |
+| `outlet_inventory` | Per-branch stock, reorder level, and availability |
+| `inventory_transaction` | Stock audit trail |
+| `orders`, `order_item`, `payment`, `delivery` | Order and fulfilment records |
+
+### Product groups and variants
+
+A product group represents a family of variants while every variant remains a
+normal `product` row. This preserves the existing order and inventory foreign
+keys.
+
+- `product.group_id` points at a `product_group`, or is `NULL` for a standalone
+  product.
+- `product.variant_name` stores the flavour/variant label.
+- `UNIQUE (group_id, variant_name)` prevents duplicate variants in one group.
+- The display name is generated as `group_name + " " + variant_name`.
+- The group owns the shared category and image; each variant has its own price
+  and image.
+- Deleting a group ungroups its variants (`ON DELETE SET NULL`); it does not
+  delete the products.
+- Deleting a product with order or stock history is blocked by foreign keys.
+
+Admin inventory URLs:
+
+- All products: `admin_dashboard.php?tab=inventories`
+- Branch-scoped view: `admin_dashboard.php?tab=inventories&outlet_id=<id>`
+
+## Conventions
+
+- **No inline `<style>` blocks.** CSS lives in `css/` and behavior lives in `js/`.
+  Small inline `<script>` blocks are allowed only for server-to-JS data payloads
+  such as `window.BRANCH_STOCK` / `window.PRODUCT_GROUPS`.
 - Load JS in dependency order: `main.js` → `upload.js` → `dashboard.js` → page-specific file.
-- Page-specific CSS is loaded **after** the shared files so it can override them.
-- Inline `onclick` attributes that pass PHP data stay in the PHP (e.g.
-  `onclick='openEditProductModal(<?php echo json_encode($p); ?>)'`) — external
-  `.js` files cannot execute PHP. Only the function definitions move into `.js`.
+- Load CSS in dependency order: `style.css` → `dashboard.css` → `inventory.css` → page-specific CSS.
+- Inline `onclick` attributes that pass PHP data stay in the PHP (for example,
+  `onclick='openEditProductModal(<?php echo json_encode($p); ?>)'`) because
+  external `.js` files cannot execute PHP. Only the function definitions move
+  into `.js`.
+- Keep existing user changes and avoid broad rewrites of unrelated markup or CSS.
 
-### Product images
+## Product images
 
-Staff can attach a photo when creating an item, and replace it from the Edit
+Staff can attach a photo when creating an item and replace it from the Edit
 Item dialog. Uploads are drag-and-drop or click-to-browse.
 
 | Piece | Location |
 | :--- | :--- |
 | Validation + storage | `includes/upload_image.php` (`save_product_image`, `delete_product_image`) |
 | Drag & drop UI | `js/upload.js` — any `[data-dropzone]` element becomes a drop target |
-| Styles | `.dropzone*` in `css/style.css`, `.item-thumb` in `css/outlet.css` |
+| Styles | `.dropzone*` in `css/style.css`, `.item-thumb` in `css/inventory.css` |
 | Stored path | `product.image_url`, files land in `uploads/products/` |
 
 Rules enforced server-side: JPG/PNG/WEBP only (checked by content, not by the
-filename), 5 MB cap, server-generated `prod_<uniqid>` filenames. Replacing a
-photo deletes the old file only after the new row commits. `uploads/products/`
+filename), 5 MB cap, and server-generated `prod_<uniqid>` filenames. Replacing
+a photo deletes the old file only after the new row commits. `uploads/products/`
 also denies script execution via `.htaccess`.
 
 To move storage to S3 later, only `save_product_image()` and
 `delete_product_image()` need to change.
+
+## Verification
+
+There is no automated test suite. At minimum:
+
+```bash
+/opt/lampp/bin/php -l admin_dashboard.php
+/opt/lampp/bin/php -l outlet_dashboard.php
+```
+
+Then check the affected page in a browser with a valid session and inspect the
+database rows for writes. For inventory/variant changes, exercise add, edit,
+attach/ungroup, group rename/delete, outlet catalog assignment, and the
+grouped-variant edit restrictions.
+
+## Known gotchas
+
+- Inactive inventory cards use `opacity`, which creates a stacking context.
+  Open dropdown menus are lifted by `.inventory-list .item-card:focus-within`
+  and `.inventory-list .item-card:has(.dropdown-menu.show)` in
+  `css/inventory.css`.
+- `mysqldump --routines` fails on this local MariaDB (`mysql.proc` column
+  mismatch). Use plain `mysqldump -uroot --single-transaction e_koperasi_db`.
+- Customer login redirects to `index.php`, which is not part of this repository.
