@@ -18,6 +18,12 @@ stack and vanilla HTML/CSS/JS.
   - Add standalone products or assign existing catalog products to the outlet.
   - For grouped variants, master fields are admin-managed; staff edit only
     branch stock settings.
+- **Customer storefront**
+  - Guest browsing and customer login/register; admin/staff see a Dashboard link.
+  - Branch selector for active outlets with location, contact, and operating hours.
+  - Live search, category pills, in-stock filter, grouped variants, and stock badges.
+  - Per-outlet `localStorage` cart with quantity limits and outlet/account scoping.
+  - Pickup-only checkout, simulated payment, retry/cancel, and order history.
 - Product image uploads with drag & drop and server-side validation.
 - Stock audit history (`inventory_transaction`) and low/out-of-stock indicators.
 
@@ -42,7 +48,8 @@ sudo /opt/lampp/lampp start
 /opt/lampp/bin/php -S localhost:8000
 ```
 
-Open <http://localhost:8000/login.php>.
+Open <http://localhost:8000/index.php> for the storefront, or
+<http://localhost:8000/login.php> to sign in.
 
 Database defaults live in `includes/db_connect.php` and can be overridden with
 the `DB_HOST`, `DB_USER`, `DB_PASS`, and `DB_NAME` environment variables.
@@ -60,17 +67,28 @@ e_Koperasi/
 │   ├── dashboard.css   # Shared dashboard chrome: topbar, sidebar, cards, FAB
 │   ├── inventory.css   # Shared inventory cards, filters, badges, stock tables
 │   ├── outlet.css      # Outlet dashboard only (loads after the shared files)
-│   └── auth.css        # login.php + register.php (self-contained)
+│   ├── auth.css        # login.php + register.php (self-contained)
+│   ├── storefront.css  # Shared storefront header, catalog, cards, cart drawer
+│   ├── checkout.css    # Checkout + simulated payment
+│   └── orders.css      # Customer order history
 ├── js/
 │   ├── main.js         # Shared helpers: openModal, closeModal, toggleMenu
 │   ├── upload.js       # Drag & drop image component for [data-dropzone]
 │   ├── dashboard.js    # Sidebar toggle (used by both dashboards)
 │   ├── admin.js        # admin_dashboard.php only
-│   └── outlet.js       # outlet_dashboard.php only
+│   ├── outlet.js       # outlet_dashboard.php only
+│   ├── storefront.js   # Cart helpers + storefront UI; exposes window.StorefrontCart
+│   ├── checkout.js     # Builds and submits the checkout payload
+│   └── orders.js       # Clears the cart after a paid order
 ├── includes/
-│   ├── db_connect.php  # DB connection + session_start() (local, gitignored)
-│   └── upload_image.php # Image validation, storage, and deletion
+│   ├── db_connect.php        # DB connection + session_start() (local, gitignored)
+│   ├── upload_image.php      # Image validation, storage, and deletion
+│   └── storefront_helpers.php # Outlet/catalog/stock/CSRF/audit helpers
 ├── uploads/products/   # Uploaded product images (placeholder + .htaccess tracked)
+├── index.php           # Public customer storefront
+├── checkout.php        # Pickup checkout (CSRF + stock locking)
+├── payment.php         # Simulated payment success/failure/cancel
+├── my_orders.php       # Customer order history
 ├── login.php
 ├── register.php
 ├── logout.php
@@ -119,13 +137,38 @@ Admin inventory URLs:
 - All products: `admin_dashboard.php?tab=inventories`
 - Branch-scoped view: `admin_dashboard.php?tab=inventories&outlet_id=<id>`
 
+### Customer storefront flow
+
+- `index.php` works for guests and customers. It resolves the outlet from
+  `?outlet_id=`, then the session, then the first active branch by name.
+- The catalog reads only `outlet_inventory` rows with `status = 'Active'`.
+  Grouped variants share the group image/category but keep their own price,
+  image, and branch stock; each variant card chip switches the displayed data.
+- The cart is stored in `localStorage` under `ekoperasi_storefront_cart_v1`,
+  scoped by outlet and account. Switching outlets with items prompts before
+  clearing; logging out clears it.
+- Checkout is pickup only (delivery is disabled because
+  `delivery.staff_delivery_id` is `UNIQUE`). The server re-reads prices, locks
+  stock with `FOR UPDATE`, writes `order_item` plus `Stock_Out` audit rows, and
+  creates a `payment` row with status `Pending`.
+- `payment.php` is a demo gateway: "Payment Successful" sets the payment to
+  `Success` while the order stays `Pending`; "Payment Failed" leaves it
+  `Pending` for retry. Cancelling after a failure sets the order to `Cancelled`,
+  restores stock, and writes `Stock_In` audit rows.
+- A successful payment redirects to `my_orders.php` with a one-time cart-clear
+  flag. `login.php` accepts `?redirect=` only for `index.php`, `checkout.php`,
+  `payment.php`, and `my_orders.php`; admin/staff always go to their dashboard.
+
 ## Conventions
 
 - **No inline `<style>` blocks.** CSS lives in `css/` and behavior lives in `js/`.
   Small inline `<script>` blocks are allowed only for server-to-JS data payloads
   such as `window.BRANCH_STOCK` / `window.PRODUCT_GROUPS`.
 - Load JS in dependency order: `main.js` → `upload.js` → `dashboard.js` → page-specific file.
+  Storefront pages use `main.js` → `storefront.js` → page-specific file, and all
+  of them expose `window.StorefrontCart`.
 - Load CSS in dependency order: `style.css` → `dashboard.css` → `inventory.css` → page-specific CSS.
+  Storefront pages use `style.css` → `storefront.css` → page-specific CSS.
 - Inline `onclick` attributes that pass PHP data stay in the PHP (for example,
   `onclick='openEditProductModal(<?php echo json_encode($p); ?>)'`) because
   external `.js` files cannot execute PHP. Only the function definitions move
@@ -159,12 +202,23 @@ There is no automated test suite. At minimum:
 ```bash
 /opt/lampp/bin/php -l admin_dashboard.php
 /opt/lampp/bin/php -l outlet_dashboard.php
+/opt/lampp/bin/php -l index.php
+/opt/lampp/bin/php -l checkout.php
+/opt/lampp/bin/php -l payment.php
+/opt/lampp/bin/php -l my_orders.php
+/opt/lampp/bin/php -l login.php
+/opt/lampp/bin/php -l includes/storefront_helpers.php
 ```
 
 Then check the affected page in a browser with a valid session and inspect the
 database rows for writes. For inventory/variant changes, exercise add, edit,
 attach/ungroup, group rename/delete, outlet catalog assignment, and the
 grouped-variant edit restrictions.
+
+For the storefront, check guest browsing, outlet switching with a non-empty
+cart, variant switching, quantity/stock limits, guest checkout redirect-back,
+pickup checkout, simulated success/failure/retry/cancel, stock restoration, and
+cart clearing after a paid order.
 
 ## Known gotchas
 
@@ -174,4 +228,10 @@ grouped-variant edit restrictions.
   `css/inventory.css`.
 - `mysqldump --routines` fails on this local MariaDB (`mysql.proc` column
   mismatch). Use plain `mysqldump -uroot --single-transaction e_koperasi_db`.
-- Customer login redirects to `index.php`, which is not part of this repository.
+- Customer login defaults to `index.php`; a safe `?redirect=` override is only
+  honoured for customer accounts on the four storefront pages.
+- `payment.php` deliberately keeps `order_status = 'Pending'` after a successful
+  payment; staff still mark orders `Ready`/`Completed` from their dashboards.
+- The `localStorage` cart is client-side only. Server prices and stock are
+  always revalidated in `checkout.php`, so tampered cart data cannot change
+  totals or oversell stock.

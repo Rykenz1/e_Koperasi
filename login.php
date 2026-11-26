@@ -3,6 +3,45 @@
 // login.php
 require_once 'includes/db_connect.php';
 
+/**
+ * Only allow local storefront pages as post-login redirect targets.
+ */
+function safe_login_redirect(?string $url): ?string
+{
+    if ($url === null) {
+        return null;
+    }
+
+    $url = trim($url);
+    if ($url === '' || preg_match('/[\x00-\x1F\x7F]/', $url)) {
+        return null;
+    }
+
+    $parts = parse_url($url);
+    if ($parts === false
+        || isset($parts['scheme'])
+        || isset($parts['host'])
+        || isset($parts['user'])
+        || isset($parts['pass'])
+        || isset($parts['port'])) {
+        return null;
+    }
+
+    $path = $parts['path'] ?? '';
+    $allowed = ['index.php', 'checkout.php', 'payment.php', 'my_orders.php'];
+    if (!in_array($path, $allowed, true)) {
+        return null;
+    }
+
+    $query = $parts['query'] ?? '';
+    if ($query !== '' && preg_match('/[\x00-\x1F\x7F]/', $query)) {
+        return null;
+    }
+
+    return $path . ($query !== '' ? '?' . $query : '');
+}
+
+$redirect = safe_login_redirect($_GET['redirect'] ?? $_POST['redirect'] ?? null);
 $error = "";
 
 // 2. Handle Form Submission
@@ -32,14 +71,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 $_SESSION['fullname']  = $user['fullname'];
                 $_SESSION['role']      = $user['role'];
 
-                // 5. Role-based redirection
+                // 5. Role-based redirection, honoring a safe storefront redirect
                 if ($user['role'] === 'Admin') {
                     header("Location: admin_dashboard.php");
                 } elseif ($user['role'] === 'Staff') {
                     header("Location: outlet_dashboard.php");
+                } elseif ($redirect !== null) {
+                    header("Location: " . $redirect);
                 } else {
-                    // $message = "Welcome to my site!";
-                    // echo "<script>alert('$message');</script>";
                     header("Location: index.php"); // Customer default
                 }
                 exit();
@@ -74,6 +113,10 @@ $conn->close();
     <?php endif; ?>
 
     <form action="login.php" method="POST">
+        <?php if ($redirect !== null): ?>
+            <input type="hidden" name="redirect" value="<?php echo htmlspecialchars($redirect, ENT_QUOTES, 'UTF-8'); ?>">
+        <?php endif; ?>
+
         <div class="form-group">
             <label for="login_id">Email or Username</label>
             <input type="text" id="login_id" name="login_id" required 
