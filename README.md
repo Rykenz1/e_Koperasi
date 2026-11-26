@@ -18,6 +18,8 @@ stack and vanilla HTML/CSS/JS.
   - Add standalone products or assign existing catalog products to the outlet.
   - For grouped variants, master fields are admin-managed; staff edit only
     branch stock settings.
+  - Live order queue: active orders refresh every 4 seconds, with the sidebar
+    counter updating on every tab.
 - **Customer storefront**
   - Guest browsing and customer login/register; admin/staff see a Dashboard link.
   - Branch selector for active outlets with location, contact, and operating hours.
@@ -80,10 +82,13 @@ e_Koperasi/
 │   ├── storefront.js   # Cart helpers + storefront UI; exposes window.StorefrontCart
 │   ├── checkout.js     # Builds and submits the checkout payload
 │   └── orders.js       # Clears the cart after a paid order
+├── api/
+│   └── fetch_orders.php    # JSON order-queue feed for the outlet dashboard
 ├── includes/
 │   ├── db_connect.php        # DB connection + session_start() (local, gitignored)
 │   ├── upload_image.php      # Image validation, storage, and deletion
-│   └── storefront_helpers.php # Outlet/catalog/stock/CSRF/audit helpers
+│   ├── storefront_helpers.php # Outlet/catalog/stock/CSRF/audit helpers
+│   └── order_queue_helpers.php # Shared order queue query with item lines
 ├── uploads/products/   # Uploaded product images (placeholder + .htaccess tracked)
 ├── index.php           # Public customer storefront
 ├── checkout.php        # Pickup checkout (CSRF + stock locking)
@@ -159,6 +164,22 @@ Admin inventory URLs:
   flag. `login.php` accepts `?redirect=` only for `index.php`, `checkout.php`,
   `payment.php`, and `my_orders.php`; admin/staff always go to their dashboard.
 
+### Live order queue
+
+- `js/outlet.js` polls `api/fetch_orders.php` every 4 seconds. The sidebar
+  counter updates on every tab; the card list is rebuilt only on the orders tab
+  and only when its data changes.
+- The endpoint returns `{ count, orders }` and is restricted to Staff/Admin
+  sessions with an assigned `outlet_id`; unauthorized callers receive HTTP 401.
+  Orders are scoped to that outlet and limited to `Pending`/`Ready`. Each order
+  includes an `items` array (name, quantity, unit price, subtotal).
+- Required items are expanded by default on each order card. The `Hide Items` /
+  `Show Items` button collapses just that order's list; collapsed orders are
+  remembered across poll-driven rebuilds.
+- Polled cards mirror the server-rendered markup and submit the same
+  `update_order_status` POST (`Pending` → `Ready` → `Completed`). There is no
+  `order_token` field in the schema.
+
 ## Conventions
 
 - **No inline `<style>` blocks.** CSS lives in `css/` and behavior lives in `js/`.
@@ -208,6 +229,8 @@ There is no automated test suite. At minimum:
 /opt/lampp/bin/php -l my_orders.php
 /opt/lampp/bin/php -l login.php
 /opt/lampp/bin/php -l includes/storefront_helpers.php
+/opt/lampp/bin/php -l outlet_dashboard.php
+/opt/lampp/bin/php -l api/fetch_orders.php
 ```
 
 Then check the affected page in a browser with a valid session and inspect the
@@ -219,6 +242,10 @@ For the storefront, check guest browsing, outlet switching with a non-empty
 cart, variant switching, quantity/stock limits, guest checkout redirect-back,
 pickup checkout, simulated success/failure/retry/cancel, stock restoration, and
 cart clearing after a paid order.
+
+For the live queue, check the endpoint as a guest/customer (401) and as staff
+(JSON), confirm another outlet's orders are excluded, then insert an order and
+verify the badge and cards update within 4 seconds with no console errors.
 
 ## Known gotchas
 
@@ -235,3 +262,7 @@ cart clearing after a paid order.
 - The `localStorage` cart is client-side only. Server prices and stock are
   always revalidated in `checkout.php`, so tampered cart data cannot change
   totals or oversell stock.
+- Admin accounts without an `outlet_id` are rejected by both
+  `outlet_dashboard.php` and `api/fetch_orders.php`; assign an outlet first.
+- `api/fetch_orders.php` uses `__DIR__ . '/../includes/db_connect.php'` so the
+  include works regardless of the server's working directory.
