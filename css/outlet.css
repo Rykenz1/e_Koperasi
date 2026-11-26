@@ -35,6 +35,70 @@
     color: #475569;
 }
 
+/* Empty state shared by the PHP-rendered and polled order queue */
+.queue-empty {
+    color: var(--text-muted);
+}
+
+/* Order queue: required items are visible at a glance and can be collapsed.
+   The same classes are used by the PHP cards and the polled JS cards. */
+.order-card {
+    align-items: flex-start;
+    flex-wrap: wrap;
+}
+
+.order-card .item-info {
+    flex: 1 1 320px;
+    min-width: 0;
+}
+
+.order-items {
+    list-style: none;
+    margin: 12px 0 0;
+    padding: 10px 12px;
+    background: #F8FAFC;
+    border: 1px solid #D0E1F9;
+    border-radius: 8px;
+    display: grid;
+    gap: 6px;
+}
+
+.order-items li {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font-size: 13px;
+    color: var(--text-dark);
+}
+
+.order-item-name {
+    flex: 1;
+    min-width: 0;
+}
+
+.order-item-qty {
+    color: var(--primary-blue);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.order-item-price {
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.order-items-empty {
+    color: var(--text-muted);
+}
+
+.order-card.items-collapsed .order-items {
+    display: none;
+}
+
+.order-toggle {
+    white-space: nowrap;
+}
+
 /* --- Topbar outlet pill --------------------------------------------------- */
 .outlet-pill {
     background: rgba(255, 255, 255, 0.18);

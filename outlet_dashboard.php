@@ -2,6 +2,7 @@
 // outlet_dashboard.php
 require_once 'includes/db_connect.php';
 require_once 'includes/upload_image.php';
+require_once 'includes/order_queue_helpers.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -375,24 +376,8 @@ foreach ($unassigned_products as $up) {
     }
 }
 
-// 5. Fetch Active Orders for THIS Outlet
-$orders = [];
-$stmt_ord = $conn->prepare("
-    SELECT o.order_id, o.order_date, o.fulfilment_method, o.order_status, o.total_amount, u.fullname AS customer_name
-    FROM orders o
-    JOIN user u ON o.user_id = u.user_id
-    WHERE o.outlet_id = ? AND o.order_status IN ('Pending', 'Ready')
-    ORDER BY o.order_date ASC
-");
-if ($stmt_ord) {
-    $stmt_ord->bind_param("i", $outlet_id);
-    $stmt_ord->execute();
-    $res_ord = $stmt_ord->get_result();
-    while ($row = $res_ord->fetch_assoc()) {
-        $orders[] = $row;
-    }
-    $stmt_ord->close();
-}
+// 5. Fetch Active Orders for THIS Outlet (with their item lines)
+$orders = fetch_outlet_order_queue($conn, $outlet_id);
 
 // 6. Fetch Recent Inventory Audit Logs for Products Carried by THIS Outlet
 $logs = [];
@@ -449,7 +434,7 @@ if ($stmt_log) {
             </a>
             <a href="?tab=orders" class="nav-item <?php echo $active_tab === 'orders' ? 'active' : ''; ?>">
                 <span class="nav-icon">&#128203;</span>
-                <span class="nav-text">Order Queue (<?php echo count($orders); ?>)</span>
+                <span class="nav-text">Order Queue (<span id="orderQueueCount"><?php echo count($orders); ?></span>)</span>
             </a>
             <a href="?tab=logs" class="nav-item <?php echo $active_tab === 'logs' ? 'active' : ''; ?>">
                 <span class="nav-icon">&#128221;</span>
@@ -569,12 +554,12 @@ if ($stmt_log) {
             <?php elseif ($active_tab === 'orders'): ?>
                 <h1 class="page-title" style="margin-bottom: 22px;">Active Order Queue</h1>
 
-                <div class="card-list">
+                <div class="card-list" id="orderQueueList" data-outlet-name="<?php echo htmlspecialchars($outlet_name, ENT_QUOTES, 'UTF-8'); ?>">
                     <?php if (empty($orders)): ?>
-                        <p style="color: var(--text-muted);">No pending or ready orders for <?php echo htmlspecialchars($outlet_name); ?> right now.</p>
+                        <p class="queue-empty">No pending or ready orders for <?php echo htmlspecialchars($outlet_name); ?> right now.</p>
                     <?php else: ?>
                         <?php foreach ($orders as $ord): ?>
-                            <div class="item-card">
+                            <div class="item-card order-card" data-order-id="<?php echo $ord['order_id']; ?>">
                                 <div class="item-info">
                                     <h3>
                                         Order #<?php echo $ord['order_id']; ?> &mdash; <?php echo htmlspecialchars($ord['customer_name']); ?>
@@ -587,8 +572,28 @@ if ($stmt_log) {
                                         Total: <strong>RM <?php echo number_format($ord['total_amount'], 2); ?></strong> &bull;
                                         Placed: <?php echo htmlspecialchars($ord['order_date']); ?>
                                     </p>
+                                    <ul class="order-items" id="order-items-<?php echo $ord['order_id']; ?>">
+                                        <?php if (empty($ord['items'])): ?>
+                                            <li class="order-items-empty">No item details available.</li>
+                                        <?php else: ?>
+                                            <?php foreach ($ord['items'] as $item): ?>
+                                                <li>
+                                                    <span class="order-item-name"><?php echo htmlspecialchars($item['product_name']); ?></span>
+                                                    <span class="order-item-qty">&times;<?php echo $item['quantity']; ?></span>
+                                                    <span class="order-item-price">RM <?php echo number_format($item['subtotal'], 2); ?></span>
+                                                </li>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </ul>
                                 </div>
                                 <div class="card-actions">
+                                    <button type="button" class="btn-outline order-toggle"
+                                            data-order-id="<?php echo $ord['order_id']; ?>"
+                                            data-item-count="<?php echo count($ord['items']); ?>"
+                                            aria-expanded="true"
+                                            aria-controls="order-items-<?php echo $ord['order_id']; ?>">
+                                        Hide Items (<?php echo count($ord['items']); ?>)
+                                    </button>
                                     <?php if ($ord['order_status'] === 'Pending'): ?>
                                         <form method="POST">
                                             <input type="hidden" name="action" value="update_order_status">
