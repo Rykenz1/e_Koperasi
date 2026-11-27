@@ -46,7 +46,7 @@ falling back to `127.0.0.1` / `root` / empty password / `e_koperasi_db`.
 | Path | Responsibility |
 | :--- | :--- |
 | `login.php`, `register.php`, `logout.php` | Authentication, session setup, safe storefront redirect-back |
-| `admin_dashboard.php` | Admin-only outlets, staff, and master inventory; POST handlers and all admin UI |
+| `admin_dashboard.php` | Admin-only outlets, staff, and master inventory; POST handlers and all admin UI, including the bulk add-products repeater |
 | `outlet_dashboard.php` | Outlet-scoped inventory, stock adjustment, catalog assignment, orders/audit views |
 | `api/fetch_orders.php` | JSON feed of active orders for the session's outlet; RBAC + 401 for unauthorized callers |
 | `index.php` | Public storefront: outlet selector, catalog filters, grouped variants, cart drawer |
@@ -99,6 +99,21 @@ falling back to `127.0.0.1` / `root` / empty password / `e_koperasi_db`.
 ## Current behavior that must be preserved
 
 - Admin manages the master catalog, groups, variants, outlets, and staff.
+- The Inventories "+" button opens a bulk add form. Each row has a trash button,
+  a compact image dropzone between the trash and product name, product name,
+  searchable Category/Group comboboxes (each with a
+  sticky "+ Create ..." item), an optional Variant/Flavour Name column that is
+  shown only when a group is selected, and price. Row 1 cannot be deleted;
+  "Add product +" appends rows. New category/group names (`name:` combobox
+  values) are find-or-created on submit inside the same transaction. Grouped
+  rows require a variant name and derive `product_name` as group + variant.
+  Un-touched blank rows are skipped; the batch is all-or-nothing and uploaded
+  images are deleted on rollback. Client-side validation (`js/admin.js`) blocks
+  submit with one `#bulkError` alert at the top of the modal for an empty form,
+  a missing product name/category/variant, or an invalid price; the modal stays
+  open and the error clears on the next edit. The form uses `novalidate` so
+  native tooltips do not replace this alert. There is no server-side modal
+  reopen flag; a full-page server error simply shows the page alert.
 - Admin does **not** distribute products to branches; branch staff add catalog items to their outlet.
 - Outlet staff may still create standalone products from the outlet dashboard.
 - For grouped variants, outlet staff can edit only branch stock, reorder level, and availability.

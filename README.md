@@ -12,6 +12,9 @@ stack and vanilla HTML/CSS/JS.
   - Product groups/variants (e.g. Fanta Orange, Fanta Grape), each variant with
     its own price and image.
   - Per-branch stock breakdown and branch-scoped inventory views.
+  - Bulk repeater for adding multiple master products/variants in one save,
+    each row with its own image dropzone, searchable category/group comboboxes,
+    and an optional variant/flavour name when a group is chosen.
   - Master product, group, and variant management.
 - **Outlet dashboard**
   - Outlet-scoped inventory, stock adjustment, reorder levels, and availability.
