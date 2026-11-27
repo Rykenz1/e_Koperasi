@@ -2,6 +2,7 @@
 // admin_dashboard.php
 require_once 'includes/db_connect.php';
 require_once 'includes/upload_image.php';
+require_once 'includes/csrf_helpers.php';
 
 // 1. Strict RBAC Access Control: Only 'Admin' role can access
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'Admin') {
@@ -71,6 +72,14 @@ $active_tab = isset($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)
 // 2. Handle Form Submissions (Add / Edit / Delete Outlets & Staffs)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+
+    // Every dashboard POST must carry a valid CSRF token. Clearing $action
+    // means no branch below matches, so nothing is written.
+    if (!csrf_valid($_POST['csrf_token'] ?? '')) {
+        $action   = '';
+        $message  = 'Your session expired. Please refresh the page and try again.';
+        $msg_type = 'error';
+    }
 
     // --- ADD OUTLET ---
     if ($action === 'add_outlet') {
@@ -943,10 +952,11 @@ if ($res_staffs) {
                                             View Inventory
                                         </a>
                                         <button type="button" class="dropdown-item"
-                                            onclick='openEditOutletModal(<?php echo json_encode($outlet); ?>)'>
+                                            onclick='openEditOutletModal(<?php echo htmlspecialchars(json_encode($outlet, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), ENT_QUOTES, 'UTF-8'); ?>)'>
                                             Edit Branch
                                         </button>
                                         <form method="POST" onsubmit="return confirm('Delete <?php echo htmlspecialchars($outlet['outlet_name']); ?>?');">
+                                            <?php echo csrf_field(); ?>
                                             <input type="hidden" name="action" value="delete_outlet">
                                             <input type="hidden" name="outlet_id" value="<?php echo $outlet['outlet_id']; ?>">
                                             <button type="submit" class="dropdown-item delete">Delete Branch</button>
@@ -1141,17 +1151,20 @@ if ($res_staffs) {
                                                         Edit Group
                                                     </button>
                                                     <form method="POST" onsubmit="return confirm('Remove <?php echo htmlspecialchars(addslashes($p['product_name'])); ?> from its group? It becomes a standalone product.');">
+                                                        <?php echo csrf_field(); ?>
                                                         <input type="hidden" name="action" value="remove_from_group">
                                                         <input type="hidden" name="product_id" value="<?php echo intval($p['product_id']); ?>">
                                                         <button type="submit" class="dropdown-item">Remove from Group</button>
                                                     </form>
                                                     <form method="POST" onsubmit="return confirm('Delete the group &quot;<?php echo htmlspecialchars(addslashes($p['group_name'])); ?>&quot;? Its variants stay in the catalog as standalone products.');">
+                                                        <?php echo csrf_field(); ?>
                                                         <input type="hidden" name="action" value="delete_product_group">
                                                         <input type="hidden" name="group_id" value="<?php echo intval($p['group_id']); ?>">
                                                         <button type="submit" class="dropdown-item delete">Delete Group</button>
                                                     </form>
                                                 <?php endif; ?>
                                                 <form method="POST" onsubmit="return confirm('Delete <?php echo htmlspecialchars(addslashes($p['product_name'])); ?> from the master catalog? Products with order records or stock history cannot be deleted.');">
+                                                    <?php echo csrf_field(); ?>
                                                     <input type="hidden" name="action" value="delete_master_product">
                                                     <input type="hidden" name="product_id" value="<?php echo intval($p['product_id']); ?>">
                                                     <button type="submit" class="dropdown-item delete">Delete Product</button>
@@ -1199,6 +1212,7 @@ if ($res_staffs) {
                                     </button>
                                     <div class="dropdown-menu" id="menu-staff-<?php echo $staff['user_id']; ?>">
                                         <form method="POST" onsubmit="return confirm('Remove staff account <?php echo htmlspecialchars($staff['username']); ?>?');">
+                                            <?php echo csrf_field(); ?>
                                             <input type="hidden" name="action" value="delete_staff">
                                             <input type="hidden" name="user_id" value="<?php echo $staff['user_id']; ?>">
                                             <button type="submit" class="dropdown-item delete">Remove Staff</button>
@@ -1224,6 +1238,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('addOutletModal')">&times;</button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="add_outlet">
                 <div class="form-group">
                     <label>Outlet Name *</label>
@@ -1270,6 +1285,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('editOutletModal')">&times;</button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_outlet">
                 <input type="hidden" name="outlet_id" id="edit_outlet_id">
                 <div class="form-group">
@@ -1326,6 +1342,7 @@ if ($res_staffs) {
 
             <!-- SINGLE PRODUCT -->
             <form method="POST" enctype="multipart/form-data" id="addMasterSingleForm">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="add_master_product">
                 <div class="form-group">
                     <label>Product Name *</label>
@@ -1369,6 +1386,7 @@ if ($res_staffs) {
 
             <!-- PRODUCT VARIANT -->
             <form method="POST" enctype="multipart/form-data" id="addMasterVariantForm" style="display: none;">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="add_product_variant">
                 <div class="form-group">
                     <label>Product Group *</label>
@@ -1438,6 +1456,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('editMasterProductModal')">&times;</button>
             </div>
             <form method="POST" enctype="multipart/form-data" id="editMasterProductForm">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_master_product">
                 <input type="hidden" name="product_id" id="edit_master_product_id">
                 <div class="form-group">
@@ -1507,6 +1526,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('editProductGroupModal')">&times;</button>
             </div>
             <form method="POST" enctype="multipart/form-data" id="editProductGroupForm">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_product_group">
                 <input type="hidden" name="group_id" id="edit_group_id">
                 <div class="form-group">
@@ -1567,6 +1587,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('addStaffModal')">&times;</button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="add_staff">
                 <div class="form-group">
                     <label>Full Name *</label>

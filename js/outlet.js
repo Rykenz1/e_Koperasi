@@ -5,6 +5,9 @@
    that pass database rows in as arguments.
    ========================================================================== */
 
+// CSRF token for the forms this file builds dynamically (the 4s order queue).
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
+
 // Switch the Add-Item modal between "New Product" and "From Catalog"
 function switchAddMode(mode) {
     const newForm = document.getElementById('newProductForm');
@@ -253,6 +256,7 @@ function filterInventory() {
             const form = document.createElement('form');
             form.method = 'POST';
             form.append(
+                makeHiddenInput('csrf_token', CSRF_TOKEN),
                 makeHiddenInput('action', 'update_order_status'),
                 makeHiddenInput('order_id', order.order_id),
                 makeHiddenInput('order_status', nextStatus)
@@ -264,6 +268,28 @@ function filterInventory() {
             form.appendChild(button);
             actions.appendChild(form);
         }
+
+        // Staff-initiated cancellation restores stock server-side; confirm first.
+        const cancelForm = document.createElement('form');
+        cancelForm.method = 'POST';
+        cancelForm.append(
+            makeHiddenInput('csrf_token', CSRF_TOKEN),
+            makeHiddenInput('action', 'cancel_order'),
+            makeHiddenInput('order_id', order.order_id)
+        );
+        cancelForm.addEventListener('submit', function (event) {
+            if (!window.confirm('Cancel order #' + order.order_id + ' and restore its stock?')) {
+                event.preventDefault();
+            }
+        });
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'submit';
+        cancelBtn.className = 'btn-quick btn-cancel';
+        cancelBtn.textContent = 'Cancel Order';
+
+        cancelForm.appendChild(cancelBtn);
+        actions.appendChild(cancelForm);
 
         card.append(info, actions);
         bindToggle(toggle);

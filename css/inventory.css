@@ -200,6 +200,16 @@
     background-color: var(--accent-blue);
 }
 
+.btn-quick.btn-cancel {
+    background-color: #FDECEA;
+    color: #B3261E;
+    border: 1px solid #F5C2C0;
+}
+
+.btn-quick.btn-cancel:hover {
+    background-color: #F9D7D4;
+}
+
 .btn-outline {
     display: inline-block;
     background-color: var(--white);
