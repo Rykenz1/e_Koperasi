@@ -60,7 +60,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             if ($insert_stmt->execute()) {
                 $success = "Registration successful! You can now log in.";
             } else {
-                $error = "Registration failed: " . $insert_stmt->error;
+                error_log('Registration insert failed: ' . $insert_stmt->error);
+                $error = "Registration failed. That username or email may already be in use.";
             }
             $insert_stmt->close();
         }

@@ -43,60 +43,316 @@ function toggleOutletDropdown() {
     outletGroup.style.display = (role === 'Staff') ? 'block' : 'none';
 }
 
-// --- PRODUCT GROUP / VARIANT HELPERS ---------------------------------------
+// --- BULK ADD PRODUCTS -----------------------------------------------------
 
-function switchAddProductMode(mode) {
-    const isVariant = mode === 'variant';
-    const singleForm = document.getElementById('addMasterSingleForm');
-    const variantForm = document.getElementById('addMasterVariantForm');
-    if (!singleForm || !variantForm) return;
+document.addEventListener('DOMContentLoaded', () => {
+    const addButton = document.getElementById('addBulkRowBtn');
+    if (addButton) addButton.addEventListener('click', createBulkRow);
 
-    singleForm.style.display = isVariant ? 'none' : 'block';
-    variantForm.style.display = isVariant ? 'block' : 'none';
+    const form = document.getElementById('bulkAddForm');
+    if (!form) return;
 
-    document.getElementById('addTabSingle').classList.toggle('active', !isVariant);
-    document.getElementById('addTabVariant').classList.toggle('active', isVariant);
+    // `novalidate` is set on the form so every failure uses the one inline
+    // alert at the top of the modal instead of native browser tooltips.
+    form.addEventListener('submit', validateBulkForm);
 
-    if (isVariant) {
-        toggleVariantGroupFields();
-    } else {
-        setDropzoneImage('addMasterDropzone', '');
+    // Clear the message as soon as the user changes anything in the form.
+    form.addEventListener('input', hideBulkError);
+    form.addEventListener('change', hideBulkError);
+    form.addEventListener('click', event => {
+        if (event.target.closest('button')) hideBulkError();
+    });
+});
+
+// --- BULK ADD VALIDATION ---------------------------------------------------
+
+function showBulkError(message) {
+    const box = document.getElementById('bulkError');
+    if (!box) return;
+    box.textContent = message;
+    box.hidden = false;
+}
+
+function hideBulkError() {
+    const box = document.getElementById('bulkError');
+    if (!box || box.hidden) return;
+    box.textContent = '';
+    box.hidden = true;
+}
+
+function bulkRowHasContent(row) {
+    const values = [
+        row.querySelector('input[name="product_name[]"]').value.trim(),
+        row.querySelector('input[name="variant_name[]"]').value.trim(),
+        row.querySelector('input[name="price[]"]').value.trim(),
+        row.querySelector('[data-combobox="category"] .combobox-value').value.trim(),
+        row.querySelector('[data-combobox="group"] .combobox-value').value.trim()
+    ];
+    const file = row.querySelector('input[type="file"]');
+    const hasImage = file && file.files && file.files.length > 0;
+    return !!(values.some(Boolean) || hasImage);
+}
+
+function validateBulkForm(event) {
+    hideBulkError();
+
+    const rows = Array.from(document.querySelectorAll('#bulkRows .bulk-row'));
+    const filled = rows.filter(bulkRowHasContent);
+
+    if (!filled.length) {
+        event.preventDefault();
+        showBulkError('Add at least one product before saving.');
+        return;
+    }
+
+    function fail(row, message) {
+        event.preventDefault();
+        showBulkError('Row ' + (rows.indexOf(row) + 1) + ': ' + message);
+    }
+
+    for (const row of filled) {
+        const grouped = bulkGroupSelected(row);
+        const name = row.querySelector('input[name="product_name[]"]').value.trim();
+        const variant = row.querySelector('input[name="variant_name[]"]').value.trim();
+        const price = row.querySelector('input[name="price[]"]').value.trim();
+        const priceValue = Number(price);
+
+        if (grouped) {
+            // The name field is derived from group + variant, so only the
+            // variant itself needs to be supplied by the user.
+            if (!variant) {
+                fail(row, 'variant / flavour name is required for a grouped product.');
+                return;
+            }
+        } else {
+            if (!name) {
+                fail(row, 'product name is required.');
+                return;
+            }
+            const category = row.querySelector('[data-combobox="category"] .combobox-value').value.trim();
+            if (!category || category === 'id:0') {
+                fail(row, 'category is required.');
+                return;
+            }
+        }
+
+        if (price === '' || !Number.isFinite(priceValue)) {
+            fail(row, 'a valid price is required.');
+            return;
+        }
+        if (priceValue < 0) {
+            fail(row, 'price cannot be negative.');
+            return;
+        }
     }
 }
 
-function toggleVariantGroupFields() {
-    const groupId = parseInt(document.getElementById('add_variant_group_id').value, 10) || 0;
-    const newGroupFields = document.getElementById('add_variant_new_group_fields');
-    const newCategoryField = document.getElementById('add_variant_new_group_category');
-    const newNameInput = document.getElementById('add_variant_new_group_name');
-    const categorySelect = document.getElementById('add_variant_category_id');
+// Names typed into "+ Create ..." are kept client-side so other rows in the
+// same batch can select them immediately; the server de-duplicates by name.
+const bulkCreated = { category: [], group: [] };
 
-    newGroupFields.style.display = groupId === 0 ? 'block' : 'none';
-    newCategoryField.style.display = groupId === 0 ? 'block' : 'none';
-    newNameInput.required = groupId === 0;
-    categorySelect.required = groupId === 0;
+function bulkOptions(kind) {
+    const source = kind === 'category' ? (window.CATEGORIES || []) : (window.PRODUCT_GROUPS || []);
+    const base = source.map(item => kind === 'category'
+        ? { id: parseInt(item.category_id, 10), label: item.category_name, isNew: false }
+        : { id: parseInt(item.group_id, 10), label: item.group_name, isNew: false });
+    return base.concat(bulkCreated[kind] || []);
 }
 
-// Open the Add Product modal directly on the Variant tab, optionally with an
-// existing group preselected (used by the per-product "Add Variant" action).
-function openAddVariantModal(groupId) {
-    openModal('addMasterProductModal');
-    switchAddProductMode('variant');
+function bulkComboValue(combo) {
+    return combo.querySelector('.combobox-value').value.trim();
+}
 
-    const groupSelect = document.getElementById('add_variant_group_id');
-    const selected = parseInt(groupId, 10) || 0;
-    groupSelect.value = selected;
-    if (parseInt(groupSelect.value, 10) !== selected) {
-        groupSelect.value = '0';
+function bulkGroupSelected(row) {
+    const combo = row.querySelector('[data-combobox="group"]');
+    const value = combo ? bulkComboValue(combo) : '';
+    return value !== '' && value !== 'id:0';
+}
+
+function updateBulkDerivedName(row) {
+    if (!bulkGroupSelected(row)) return; // standalone names belong to the user
+    const groupCombo = row.querySelector('[data-combobox="group"]');
+    const groupLabel = groupCombo.querySelector('.combobox-input').value.trim();
+    const variant = row.querySelector('input[name="variant_name[]"]').value.trim();
+    row.querySelector('.bulk-name').value = variant ? (groupLabel + ' ' + variant) : groupLabel;
+}
+
+function onBulkGroupChange(combo) {
+    const row = combo.closest('.bulk-row');
+    if (!row) return;
+    const grouped = bulkGroupSelected(row);
+    row.querySelector('.bulk-variant-field').hidden = !grouped;
+    row.querySelector('.bulk-name').readOnly = grouped;
+    updateBulkDerivedName(row);
+}
+
+function initBulkCombobox(combo, kind) {
+    const input = combo.querySelector('.combobox-input');
+    const hiddenInput = combo.querySelector('.combobox-value');
+    const panel = combo.querySelector('.combobox-panel');
+    const optionsBox = combo.querySelector('.combobox-options');
+    const createButton = combo.querySelector('.combobox-create');
+
+    function renderOptions(query) {
+        optionsBox.textContent = '';
+        const needle = (query || '').trim().toLowerCase();
+        const matches = bulkOptions(kind).filter(item =>
+            !needle || item.label.toLowerCase().includes(needle));
+
+        if (!matches.length) {
+            const empty = document.createElement('div');
+            empty.className = 'combobox-empty';
+            empty.textContent = 'No matches \u2014 use + Create';
+            optionsBox.appendChild(empty);
+            return;
+        }
+
+        matches.forEach(item => {
+            const option = document.createElement('button');
+            option.type = 'button';
+            option.className = 'combobox-option';
+            option.textContent = item.label;
+            // Prevent blur before the click registers.
+            option.addEventListener('mousedown', event => event.preventDefault());
+            option.addEventListener('click', () => {
+                input.value = item.label;
+                hiddenInput.value = item.isNew ? 'name:' + item.label : 'id:' + item.id;
+                panel.hidden = true;
+                onBulkGroupChange(combo);
+            });
+            optionsBox.appendChild(option);
+        });
     }
-    document.getElementById('add_variant_new_group_name').value = '';
-    const variantInput = document.querySelector('#addMasterVariantForm input[name="variant_name"]');
-    const priceInput = document.querySelector('#addMasterVariantForm input[name="price"]');
-    if (variantInput) variantInput.value = '';
-    if (priceInput) priceInput.value = '';
-    setDropzoneImage('addVariantDropzone', '');
-    toggleVariantGroupFields();
-    variantInput && variantInput.focus();
+
+    function closePanel() {
+        panel.hidden = true;
+        panel.classList.remove('drop-up');
+    }
+
+    function openPanel(query) {
+        renderOptions(query);
+        panel.hidden = false;
+        // Rows live in a scrollable box; flip the menu above the input when
+        // there is not enough room below before the box clips it.
+        const bounds = document.getElementById('bulkRows').getBoundingClientRect();
+        const rect = panel.getBoundingClientRect();
+        const roomAbove = rect.top - bounds.top;
+        panel.classList.toggle('drop-up', rect.bottom > bounds.bottom && roomAbove > rect.height);
+    }
+
+    input.addEventListener('focus', () => openPanel(''));
+
+    input.addEventListener('input', () => {
+        // A typed value is no longer a confirmed selection until picked/created.
+        hiddenInput.value = '';
+        openPanel(input.value);
+        onBulkGroupChange(combo);
+    });
+
+    input.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closePanel();
+    });
+
+    createButton.addEventListener('mousedown', event => event.preventDefault());
+    createButton.addEventListener('click', () => {
+        const name = input.value.trim();
+        if (!name) {
+            input.focus();
+            return;
+        }
+        const existing = bulkOptions(kind).find(item =>
+            item.label.toLowerCase() === name.toLowerCase());
+        if (existing) {
+            input.value = existing.label;
+            hiddenInput.value = existing.isNew ? 'name:' + existing.label : 'id:' + existing.id;
+        } else {
+            bulkCreated[kind].push({ id: 0, label: name, isNew: true });
+            input.value = name;
+            hiddenInput.value = 'name:' + name;
+        }
+        closePanel();
+        onBulkGroupChange(combo);
+    });
+
+    // One listener per combobox keeps the component self-contained; panels are
+    // cheap and the listener exits immediately for unrelated clicks.
+    document.addEventListener('click', event => {
+        if (!combo.contains(event.target)) closePanel();
+    });
+}
+
+function updateBulkDeleteButtons() {
+    const rows = document.querySelectorAll('#bulkRows .bulk-row');
+    rows.forEach((row, index) => {
+        const button = row.querySelector('.bulk-delete');
+        // Keep the button's 32px slot so every row's image column lines up,
+        // even when the first row cannot be deleted.
+        const unavailable = rows.length <= 1 || index === 0;
+        button.style.visibility = unavailable ? 'hidden' : 'visible';
+        button.disabled = unavailable;
+    });
+}
+
+function createBulkRow() {
+    const template = document.getElementById('bulkRowTemplate');
+    const rows = document.getElementById('bulkRows');
+    if (!template || !rows) return null;
+
+    const row = template.content.firstElementChild.cloneNode(true);
+    rows.appendChild(row);
+
+    row.querySelectorAll('[data-combobox]').forEach(combo => {
+        initBulkCombobox(combo, combo.dataset.combobox);
+    });
+    const zone = row.querySelector('.bulk-thumb');
+    initDropzone(zone);
+
+    row.querySelector('.bulk-thumb-clear').addEventListener('click', event => {
+        // Don't let the click bubble into the dropzone's click-to-browse.
+        event.stopPropagation();
+        const fileInput = zone.querySelector('input[type="file"]');
+        if (fileInput) fileInput.value = '';
+        setDropzoneImage(zone, '');
+    });
+
+    row.querySelector('.bulk-delete').addEventListener('click', () => {
+        if (document.querySelectorAll('#bulkRows .bulk-row').length <= 1) return;
+        row.remove();
+        updateBulkDeleteButtons();
+    });
+    row.querySelector('input[name="variant_name[]"]').addEventListener('input', () => {
+        updateBulkDerivedName(row);
+    });
+
+    updateBulkDeleteButtons();
+    return row;
+}
+
+function resetBulkRows() {
+    const rows = document.getElementById('bulkRows');
+    if (!rows) return;
+    rows.textContent = '';
+    createBulkRow();
+}
+
+function openBulkAddModal() {
+    resetBulkRows();
+    openModal('bulkAddModal');
+}
+
+// Per-product "Add Variant" action: open the bulk form with the group picked.
+function openBulkAddWithGroup(groupId) {
+    openBulkAddModal();
+    const id = parseInt(groupId, 10) || 0;
+    const group = (window.PRODUCT_GROUPS || []).find(g => parseInt(g.group_id, 10) === id);
+    const row = document.querySelector('#bulkRows .bulk-row');
+    if (!group || !row) return;
+
+    const combo = row.querySelector('[data-combobox="group"]');
+    combo.querySelector('.combobox-input').value = group.group_name;
+    combo.querySelector('.combobox-value').value = 'id:' + id;
+    onBulkGroupChange(combo);
+    row.querySelector('input[name="variant_name[]"]').focus();
 }
 
 // Keep product master fields consistent with the chosen group.

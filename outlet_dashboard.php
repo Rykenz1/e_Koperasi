@@ -3,6 +3,7 @@
 require_once 'includes/db_connect.php';
 require_once 'includes/upload_image.php';
 require_once 'includes/order_queue_helpers.php';
+require_once 'includes/csrf_helpers.php';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -40,6 +41,14 @@ if (!in_array($active_tab, ['inventory', 'orders', 'logs'])) {
 // 2. Handle POST Actions
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+
+    // Every dashboard POST must carry a valid CSRF token. Clearing $action
+    // means no branch below matches, so nothing is written.
+    if (!csrf_valid($_POST['csrf_token'] ?? '')) {
+        $action   = '';
+        $message  = 'Your session expired. Please refresh the page and try again.';
+        $msg_type = 'error';
+    }
 
     // Tracks a newly uploaded file so it can be removed if the DB write fails.
     $uploaded_image_to_cleanup = null;
@@ -271,32 +280,175 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $active_tab = 'inventory';
         }
 
-        // --- UPDATE ORDER STATUS ---
+        // --- UPDATE ORDER STATUS (HANDOVER FLOW ONLY) ---
         elseif ($action === 'update_order_status') {
             $order_id   = intval($_POST['order_id']);
             $next_state = $_POST['order_status'] ?? 'Ready';
 
-            if (in_array($next_state, ['Pending', 'Ready', 'Completed', 'Cancelled'])) {
-                $stmt = $conn->prepare("UPDATE orders SET order_status = ? WHERE order_id = ? AND outlet_id = ?");
-                $stmt->bind_param("sii", $next_state, $order_id, $outlet_id);
-                $stmt->execute();
-                $stmt->close();
+            // Cancelling restores stock and writes audit rows, so it must never
+            // happen through this endpoint. Only the handover flow is allowed.
+            $allowed_transitions = [
+                'Pending' => ['Ready'],
+                'Ready'   => ['Completed'],
+            ];
 
-                $message = "Order #$order_id marked as $next_state.";
-                $msg_type = "success";
+            $current_stmt = $conn->prepare(
+                "SELECT order_status FROM orders WHERE order_id = ? AND outlet_id = ? LIMIT 1"
+            );
+            $current_stmt->bind_param("ii", $order_id, $outlet_id);
+            $current_stmt->execute();
+            $current = $current_stmt->get_result()->fetch_assoc();
+            $current_stmt->close();
+
+            if (!$current) {
+                $message  = "Order #$order_id was not found for $outlet_name.";
+                $msg_type = "error";
+            } elseif (!in_array($next_state, $allowed_transitions[$current['order_status']] ?? [], true)) {
+                $message  = "Order #$order_id cannot move from {$current['order_status']} to $next_state.";
+                $msg_type = "error";
+            } else {
+                // The extra status predicate makes a double-submit a no-op.
+                $stmt = $conn->prepare(
+                    "UPDATE orders SET order_status = ?
+                     WHERE order_id = ? AND outlet_id = ? AND order_status = ?"
+                );
+                $stmt->bind_param("siis", $next_state, $order_id, $outlet_id, $current['order_status']);
+                $stmt->execute();
+
+                if ($stmt->affected_rows !== 1) {
+                    $message  = "Order #$order_id changed while you were updating it. Please refresh.";
+                    $msg_type = "error";
+                } else {
+                    $message  = "Order #$order_id marked as $next_state.";
+                    $msg_type = "success";
+                }
+                $stmt->close();
             }
             $active_tab = 'orders';
         }
 
+        // --- CANCEL AN ORDER AND RESTORE ITS STOCK ---
+        elseif ($action === 'cancel_order') {
+            $order_id = intval($_POST['order_id'] ?? 0);
+
+            try {
+                $conn->begin_transaction();
+
+                $lock = $conn->prepare(
+                    "SELECT order_status FROM orders
+                     WHERE order_id = ? AND outlet_id = ? FOR UPDATE"
+                );
+                $lock->bind_param("ii", $order_id, $outlet_id);
+                $lock->execute();
+                $locked = $lock->get_result()->fetch_assoc();
+                $lock->close();
+
+                if (!$locked) {
+                    throw new RuntimeException("Order #$order_id was not found for $outlet_name.");
+                }
+                if (!in_array($locked['order_status'], ['Pending', 'Ready'], true)) {
+                    throw new RuntimeException(
+                        "Order #$order_id is {$locked['order_status']} and can no longer be cancelled."
+                    );
+                }
+
+                $items_stmt = $conn->prepare(
+                    "SELECT product_id, quantity FROM order_item WHERE order_id = ?"
+                );
+                $items_stmt->bind_param("i", $order_id);
+                $items_stmt->execute();
+                $items_res = $items_stmt->get_result();
+                $items     = [];
+                while ($item = $items_res->fetch_assoc()) {
+                    $items[] = $item;
+                }
+                $items_stmt->close();
+
+                if (empty($items)) {
+                    throw new RuntimeException("Order #$order_id has no items to restore.");
+                }
+
+                $restore = $conn->prepare(
+                    "UPDATE outlet_inventory
+                     SET stock_quantity = stock_quantity + ?
+                     WHERE outlet_id = ? AND product_id = ?"
+                );
+                $log = $conn->prepare(
+                    "INSERT INTO inventory_transaction
+                     (outlet_id, product_id, staff_user_id, transaction_type, quantity_changed, remarks)
+                     VALUES (?, ?, ?, 'Stock_In', ?, ?)"
+                );
+
+                foreach ($items as $item) {
+                    $quantity   = intval($item['quantity']);
+                    $product_id = intval($item['product_id']);
+
+                    $restore->bind_param("iii", $quantity, $outlet_id, $product_id);
+                    $restore->execute();
+                    if ($restore->affected_rows !== 1) {
+                        throw new RuntimeException(
+                            'Stock could not be restored because a product is no longer in this outlet. '
+                            . 'Add it back to the outlet, then cancel again.'
+                        );
+                    }
+
+                    $remark = 'Order #' . $order_id . ' cancelled by staff';
+                    $log->bind_param("iiiis", $outlet_id, $product_id, $staff_id, $quantity, $remark);
+                    $log->execute();
+                }
+
+                $restore->close();
+                $log->close();
+
+                $cancel = $conn->prepare(
+                    "UPDATE orders SET order_status = 'Cancelled'
+                     WHERE order_id = ? AND outlet_id = ?"
+                );
+                $cancel->bind_param("ii", $order_id, $outlet_id);
+                $cancel->execute();
+                $cancel->close();
+
+                // A paid order becomes a refund; unpaid orders keep their state.
+                $refund = $conn->prepare(
+                    "UPDATE payment SET payment_status = 'Refunded'
+                     WHERE order_id = ? AND payment_status = 'Success'"
+                );
+                $refund->bind_param("i", $order_id);
+                $refund->execute();
+                $refund->close();
+
+                $conn->commit();
+
+                $message  = "Order #$order_id cancelled and its stock restored.";
+                $msg_type = "success";
+            } catch (Throwable $exception) {
+                try {
+                    $conn->rollback();
+                } catch (Throwable $ignored) {
+                    // No active transaction to roll back.
+                }
+                error_log('Order cancellation error: ' . $exception->getMessage());
+                $message  = $exception instanceof RuntimeException
+                    ? $exception->getMessage()
+                    : 'We could not cancel that order. Please try again.';
+                $msg_type = "error";
+            }
+
+            $active_tab = 'orders';
+        }
+
     } catch (mysqli_sql_exception $e) {
-        if ($conn->in_transaction) {
+        try {
             $conn->rollback();
+        } catch (Throwable $ignored) {
+            // No active transaction to roll back.
         }
         // If the DB write failed, don't leave the new image behind as an orphan.
         if ($uploaded_image_to_cleanup !== null) {
             delete_product_image($uploaded_image_to_cleanup);
         }
-        $message = "Database Error: " . $e->getMessage();
+        error_log('Outlet dashboard error: ' . $e->getMessage());
+        $message  = "We could not complete that action. Please try again.";
         $msg_type = "error";
     }
 }
@@ -406,6 +558,7 @@ if ($stmt_log) {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="csrf-token" content="<?php echo htmlspecialchars(csrf_token(), ENT_QUOTES, 'UTF-8'); ?>">
     <title>Outlet Dashboard - <?php echo htmlspecialchars($outlet_name); ?></title>
     <link rel="stylesheet" href="css/style.css">
     <link rel="stylesheet" href="css/dashboard.css">
@@ -518,6 +671,7 @@ if ($stmt_log) {
                                     </button>
 
                                     <form method="POST" style="display:inline;">
+                                        <?php echo csrf_field(); ?>
                                         <input type="hidden" name="action" value="toggle_availability">
                                         <input type="hidden" name="product_id" value="<?php echo $p['product_id']; ?>">
                                         <input type="hidden" name="new_status" value="<?php echo $is_active ? 'Inactive' : 'Active'; ?>">
@@ -537,6 +691,7 @@ if ($stmt_log) {
                                                 Edit Item
                                             </button>
                                             <form method="POST" onsubmit="return confirm('Remove <?php echo htmlspecialchars(addslashes($p['product_name'])); ?> from <?php echo htmlspecialchars(addslashes($outlet_name)); ?>?');">
+                                                <?php echo csrf_field(); ?>
                                                 <input type="hidden" name="action" value="remove_from_outlet">
                                                 <input type="hidden" name="product_id" value="<?php echo $p['product_id']; ?>">
                                                 <button type="submit" class="dropdown-item delete">Remove from Outlet</button>
@@ -596,6 +751,7 @@ if ($stmt_log) {
                                     </button>
                                     <?php if ($ord['order_status'] === 'Pending'): ?>
                                         <form method="POST">
+                                            <?php echo csrf_field(); ?>
                                             <input type="hidden" name="action" value="update_order_status">
                                             <input type="hidden" name="order_id" value="<?php echo $ord['order_id']; ?>">
                                             <input type="hidden" name="order_status" value="Ready">
@@ -603,12 +759,20 @@ if ($stmt_log) {
                                         </form>
                                     <?php elseif ($ord['order_status'] === 'Ready'): ?>
                                         <form method="POST">
+                                            <?php echo csrf_field(); ?>
                                             <input type="hidden" name="action" value="update_order_status">
                                             <input type="hidden" name="order_id" value="<?php echo $ord['order_id']; ?>">
                                             <input type="hidden" name="order_status" value="Completed">
                                             <button type="submit" class="btn-quick">Complete Handover</button>
                                         </form>
                                     <?php endif; ?>
+                                    <form method="POST"
+                                          onsubmit="return confirm('Cancel order #<?php echo intval($ord['order_id']); ?> and restore its stock?');">
+                                        <?php echo csrf_field(); ?>
+                                        <input type="hidden" name="action" value="cancel_order">
+                                        <input type="hidden" name="order_id" value="<?php echo intval($ord['order_id']); ?>">
+                                        <button type="submit" class="btn-quick btn-cancel">Cancel Order</button>
+                                    </form>
                                 </div>
                             </div>
                         <?php endforeach; ?>
@@ -669,6 +833,7 @@ if ($stmt_log) {
 
             <!-- Form A: Create New Master Product + Link to Outlet -->
             <form method="POST" id="newProductForm" enctype="multipart/form-data">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="add_product">
                 <div class="form-group">
                     <label>Product Name *</label>
@@ -729,6 +894,7 @@ if ($stmt_log) {
             <!-- Form B: Assign Existing Master Product to Outlet -->
             <?php if (!empty($unassigned_products)): ?>
                 <form method="POST" id="existingProductForm" style="display:none;">
+                    <?php echo csrf_field(); ?>
                     <input type="hidden" name="action" value="assign_existing_product">
                     <div class="form-group">
                         <label>Select Master Catalog Product *</label>
@@ -776,6 +942,7 @@ if ($stmt_log) {
                 <button class="close-modal" onclick="closeModal('editProductModal')">&times;</button>
             </div>
             <form method="POST" enctype="multipart/form-data">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_product">
                 <input type="hidden" name="product_id" id="edit_product_id">
                 <div class="form-hint" id="edit_grouped_notice" style="display:none; margin-bottom:14px;">
@@ -838,6 +1005,7 @@ if ($stmt_log) {
                 <button class="close-modal" onclick="closeModal('stockModal')">&times;</button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="adjust_stock">
                 <input type="hidden" name="product_id" id="stock_product_id">
                 <p style="font-size: 14px; color: var(--text-muted); margin-bottom: 14px;">

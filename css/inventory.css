@@ -200,6 +200,16 @@
     background-color: var(--accent-blue);
 }
 
+.btn-quick.btn-cancel {
+    background-color: #FDECEA;
+    color: #B3261E;
+    border: 1px solid #F5C2C0;
+}
+
+.btn-quick.btn-cancel:hover {
+    background-color: #F9D7D4;
+}
+
 .btn-outline {
     display: inline-block;
     background-color: var(--white);
@@ -320,4 +330,333 @@
 .modal-tab.active {
     color: var(--primary-blue);
     border-bottom-color: var(--primary-blue);
+}
+
+/* --- Bulk add repeater (admin only) -------------------------------------- */
+.modal-box-bulk {
+    max-width: 980px;
+    height: 72vh;
+    min-height: 460px;
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.modal-box-bulk .modal-header {
+    flex-shrink: 0;
+}
+
+#bulkAddForm {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.bulk-error {
+    flex-shrink: 0;
+    max-width: none;
+    margin-bottom: 12px;
+}
+
+.bulk-hint {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    font-size: 13px;
+    line-height: 1.5;
+    margin-bottom: 14px;
+}
+
+.bulk-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding-right: 4px;
+    margin-bottom: 6px;
+}
+
+.bulk-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    position: relative;
+}
+
+.bulk-row > .dropzone-error {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    max-width: 240px;
+    margin-top: 2px;
+}
+
+.bulk-thumb {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    min-height: 0;
+    flex: 0 0 48px;
+    padding: 0;
+    border-width: 1.5px;
+    border-radius: 8px;
+    background-color: var(--white);
+}
+
+.bulk-thumb-clear {
+    position: absolute;
+    top: -7px;
+    right: -7px;
+    z-index: 2;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border: 2px solid var(--white);
+    border-radius: 50%;
+    background-color: #B3261E;
+    color: var(--white);
+    font-size: 12px;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.bulk-thumb.has-image .bulk-thumb-clear {
+    display: flex;
+}
+
+.bulk-thumb .dropzone-preview {
+    width: 100%;
+    height: 100%;
+    gap: 0;
+}
+
+.bulk-thumb .dropzone-preview img {
+    display: none;
+    width: 100%;
+    height: 100%;
+    max-height: none;
+    object-fit: cover;
+    border-radius: 6px;
+}
+
+.bulk-thumb.has-image .dropzone-preview img {
+    display: block;
+}
+
+.bulk-thumb-icon {
+    font-size: 22px;
+    line-height: 1;
+    color: var(--text-muted);
+}
+
+.bulk-thumb.has-image .bulk-thumb-icon {
+    display: none;
+}
+
+.bulk-delete {
+    flex: 0 0 32px;
+    width: 32px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 0;
+}
+
+.bulk-delete:hover {
+    color: #B3261E;
+}
+
+.bulk-input {
+    min-width: 0;
+    padding: 10px 12px;
+    border: 1px solid #94A3B8;
+    border-radius: 8px;
+    font-size: 14px;
+    color: var(--text-dark);
+    background: var(--white);
+}
+
+.bulk-input:focus {
+    outline: none;
+    border-color: var(--primary-blue);
+}
+
+.bulk-name {
+    flex: 2 1 35%;
+}
+
+.bulk-name[readonly] {
+    background: #F8FAFC;
+    color: #475569;
+}
+
+.bulk-variant-field {
+    flex: 1.5 1 25%;
+    min-width: 0;
+}
+
+.bulk-variant-field .bulk-input {
+    width: 100%;
+}
+
+.bulk-price {
+    flex: 1 1 15%;
+}
+
+.bulk-add-link {
+    display: block;
+    flex-shrink: 0;
+    margin: 4px 0 12px 0;
+    background: none;
+    border: none;
+    padding: 4px 0;
+    color: var(--primary-blue);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.bulk-add-link:hover {
+    color: var(--accent-blue);
+    text-decoration: underline;
+}
+
+.bulk-footer {
+    flex-shrink: 0;
+}
+
+.bulk-actions {
+    display: flex;
+    gap: 12px;
+    margin-top: 14px;
+}
+
+.bulk-actions .btn-submit {
+    flex: 1;
+    width: auto;
+    margin-top: 0;
+}
+
+.bulk-cancel {
+    flex: 1;
+    padding: 11px;
+    background: var(--white);
+    color: var(--text-dark);
+    border: 1px solid #CBD5E1;
+    border-radius: 6px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.bulk-cancel:hover {
+    background: #F1F5F9;
+}
+
+.combobox {
+    position: relative;
+    flex: 1.5 1 25%;
+    min-width: 0;
+}
+
+.combobox-field {
+    position: relative;
+}
+
+.combobox-input {
+    width: 100%;
+    padding-right: 28px !important;
+}
+
+.combobox-chevron {
+    position: absolute;
+    top: 50%;
+    right: 10px;
+    transform: translateY(-50%);
+    color: var(--text-muted);
+    font-size: 12px;
+    pointer-events: none;
+}
+
+.combobox-panel {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+    max-height: 240px;
+    background: var(--white);
+    border: 1px solid #CBD5E1;
+    border-radius: 8px;
+    box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+    overflow: hidden;
+}
+
+.combobox-panel.drop-up {
+    top: auto;
+    bottom: calc(100% + 4px);
+}
+
+.combobox-create {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    padding: 10px 12px;
+    background: var(--light-blue-bg);
+    border: none;
+    border-bottom: 1px solid #D0E1F9;
+    color: var(--primary-blue);
+    font-size: 14px;
+    font-weight: 600;
+    text-align: left;
+    cursor: pointer;
+}
+
+.combobox-create:hover {
+    background: #E7F0FF;
+}
+
+.combobox-options {
+    overflow-y: auto;
+}
+
+.combobox-option {
+    display: block;
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--white);
+    border: none;
+    color: var(--text-dark);
+    font-size: 14px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.combobox-option:hover {
+    background: #F1F5F9;
+}
+
+.combobox-empty {
+    padding: 9px 12px;
+    color: var(--text-muted);
+    font-size: 13px;
+}
+
+.bulk-variant-field[hidden],
+.combobox-panel[hidden] {
+    display: none !important;
 }

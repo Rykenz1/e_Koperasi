@@ -2,6 +2,7 @@
 // admin_dashboard.php
 require_once 'includes/db_connect.php';
 require_once 'includes/upload_image.php';
+require_once 'includes/csrf_helpers.php';
 
 // 1. Strict RBAC Access Control: Only 'Admin' role can access
 if (!isset($_SESSION['user_id']) || $_SESSION['role'] !== 'Admin') {
@@ -64,6 +65,42 @@ function delete_group_image_if_unused($conn, ?string $path): void
     }
 }
 
+/**
+ * Rebuild a per-row file array from a bulk form's $_FILES['product_image'].
+ * PHP nests `name="product_image[]"` uploads into parallel arrays; this
+ * converts them back into the single-file shape save_product_image() expects.
+ */
+function bulk_restructure_images(array $files): array
+{
+    $rows = [];
+    foreach (($files['name'] ?? []) as $index => $name) {
+        $rows[$index] = [
+            'name'     => $name,
+            'type'     => $files['type'][$index] ?? '',
+            'tmp_name' => $files['tmp_name'][$index] ?? '',
+            'error'    => $files['error'][$index] ?? UPLOAD_ERR_NO_FILE,
+            'size'     => $files['size'][$index] ?? 0,
+        ];
+    }
+    return $rows;
+}
+
+/**
+ * Decode a combobox value: `id:123` selects an existing row, `name:Text`
+ * asks the server to find-or-create that name during the bulk import.
+ */
+function parse_bulk_combobox_value($value): array
+{
+    $value = trim((string) $value);
+    if (preg_match('/^id:(\d+)$/', $value, $matches)) {
+        return ['type' => 'id', 'value' => (int) $matches[1]];
+    }
+    if (str_starts_with($value, 'name:')) {
+        return ['type' => 'name', 'value' => trim(substr($value, 5))];
+    }
+    return ['type' => 'none', 'value' => ''];
+}
+
 // Active tab ('outlets', 'staffs' or 'inventories')
 $allowed_tabs = ['outlets', 'staffs', 'inventories'];
 $active_tab = isset($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true) ? $_GET['tab'] : 'outlets';
@@ -71,6 +108,14 @@ $active_tab = isset($_GET['tab']) && in_array($_GET['tab'], $allowed_tabs, true)
 // 2. Handle Form Submissions (Add / Edit / Delete Outlets & Staffs)
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+
+    // Every dashboard POST must carry a valid CSRF token. Clearing $action
+    // means no branch below matches, so nothing is written.
+    if (!csrf_valid($_POST['csrf_token'] ?? '')) {
+        $action   = '';
+        $message  = 'Your session expired. Please refresh the page and try again.';
+        $msg_type = 'error';
+    }
 
     // --- ADD OUTLET ---
     if ($action === 'add_outlet') {
@@ -174,139 +219,239 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $active_tab = 'staffs';
     }
 
-    // --- ADD MASTER CATALOG PRODUCT (NO BRANCH DISTRIBUTION) ---
-    elseif ($action === 'add_master_product') {
-        $product_name = trim($_POST['product_name'] ?? '');
-        $category_id  = intval($_POST['category_id'] ?? 0);
-        $price        = floatval($_POST['price'] ?? 0);
-        $upload       = save_product_image($_FILES['product_image'] ?? []);
+    // --- ADD MULTIPLE MASTER CATALOG PRODUCTS IN ONE BATCH ---
+    elseif ($action === 'add_bulk_products') {
+        $names    = $_POST['product_name'] ?? [];
+        $cats     = $_POST['category_value'] ?? [];
+        $groups   = $_POST['group_value'] ?? [];
+        $variants = $_POST['variant_name'] ?? [];
+        $prices   = $_POST['price'] ?? [];
+        $images   = bulk_restructure_images($_FILES['product_image'] ?? []);
 
-        if (!$upload['ok']) {
-            $message  = $upload['error'];
-            $msg_type = "error";
-        } elseif ($product_name === '' || $category_id <= 0) {
-            $message  = "Product name and category are required.";
-            $msg_type = "error";
-        } else {
-            $image_url = $upload['path'] ?? PRODUCT_IMAGE_DEFAULT;
-
-            try {
-                $stmt = $conn->prepare("INSERT INTO product (category_id, product_name, price, image_url) VALUES (?, ?, ?, ?)");
-                $stmt->bind_param("isds", $category_id, $product_name, $price, $image_url);
-                $stmt->execute();
-                $stmt->close();
-
-                $message  = "Product '$product_name' added to the master catalog. Branch staff can now add it from the catalog.";
-                $msg_type = "success";
-            } catch (mysqli_sql_exception $e) {
-                if ($upload['path'] !== null) {
-                    delete_product_image($upload['path']);
-                }
-                $message  = "Failed to add product: " . $e->getMessage();
-                $msg_type = "error";
-            }
+        foreach (['names', 'cats', 'groups', 'variants', 'prices'] as $posted_key) {
+            if (!is_array($$posted_key)) $$posted_key = [];
         }
-        $active_tab = 'inventories';
-    }
 
-    // --- ADD A VARIANT TO A PRODUCT GROUP ---
-    elseif ($action === 'add_product_variant') {
-        $group_id       = intval($_POST['group_id'] ?? 0);
-        $new_group_name = trim($_POST['new_group_name'] ?? '');
-        $variant_name   = trim($_POST['variant_name'] ?? '');
-        $category_id    = intval($_POST['category_id'] ?? 0);
-        $price          = floatval($_POST['price'] ?? 0);
-        $upload         = save_product_image($_FILES['product_image'] ?? []);
+        $rows = [];
+        $row_count = max(count($names), count($prices), count($variants));
+        for ($i = 0; $i < $row_count; $i++) {
+            $name        = trim((string) ($names[$i] ?? ''));
+            $variant     = trim((string) ($variants[$i] ?? ''));
+            $price_value = trim((string) ($prices[$i] ?? ''));
+            $cat_value   = (string) ($cats[$i] ?? '');
+            $group_value = (string) ($groups[$i] ?? '');
+            $has_image   = isset($images[$i])
+                           && ($images[$i]['error'] ?? UPLOAD_ERR_NO_FILE) !== UPLOAD_ERR_NO_FILE;
 
-        if (!$upload['ok']) {
-            $message  = $upload['error'];
-            $msg_type = "error";
-        } elseif ($variant_name === '') {
-            $message  = "Flavour / variant name is required.";
+            // Ignore rows the user never touched, but keep rows with only an image
+            // so the missing-name error is shown instead of silently dropping it.
+            if ($name === '' && $variant === '' && $price_value === ''
+                && $cat_value === '' && $group_value === '' && !$has_image) {
+                continue;
+            }
+
+            $rows[] = [
+                'index'    => $i,
+                'name'     => $name,
+                'variant'  => $variant,
+                'price'    => $price_value,
+                'category' => parse_bulk_combobox_value($cat_value),
+                'group'    => parse_bulk_combobox_value($group_value),
+            ];
+        }
+
+        if (empty($rows)) {
+            $message  = "Add at least one product before saving.";
             $msg_type = "error";
         } else {
-            $new_upload_path = $upload['path'];
-
-            try {
-                $conn->begin_transaction();
-
-                if ($group_id > 0) {
-                    $get = $conn->prepare("SELECT group_name, category_id FROM product_group WHERE group_id = ?");
-                    $get->bind_param("i", $group_id);
-                    $get->execute();
-                    $group = $get->get_result()->fetch_assoc();
-                    $get->close();
-
-                    if (!$group) {
-                        throw new RuntimeException("Selected product group was not found.");
-                    }
-
-                    $group_name = $group['group_name'];
-                    $category_id = intval($group['category_id']);
-                } else {
-                    if ($new_group_name === '') {
-                        throw new RuntimeException("Group name is required when creating a new group.");
-                    }
-                    if ($category_id <= 0) {
-                        throw new RuntimeException("Category is required for a new group.");
-                    }
-
-                    $chk = $conn->prepare("SELECT group_id FROM product_group WHERE group_name = ?");
-                    $chk->bind_param("s", $new_group_name);
-                    $chk->execute();
-                    if ($chk->get_result()->fetch_assoc()) {
-                        $chk->close();
-                        throw new RuntimeException("A group named '$new_group_name' already exists.");
-                    }
-                    $chk->close();
-
-                    $ins_group = $conn->prepare("INSERT INTO product_group (group_name, category_id) VALUES (?, ?)");
-                    $ins_group->bind_param("si", $new_group_name, $category_id);
-                    $ins_group->execute();
-                    $group_id = $conn->insert_id;
-                    $ins_group->close();
-
-                    $group_name = $new_group_name;
+            // Save files before opening the transaction so a DB failure can
+            // still clean up every image that was written during this batch.
+            $saved_paths   = [];
+            $upload_errors = [];
+            foreach ($rows as $row) {
+                if (!isset($images[$row['index']])) continue;
+                $upload = save_product_image($images[$row['index']]);
+                if (!$upload['ok']) {
+                    $upload_errors[] = 'Row ' . ($row['index'] + 1) . ': ' . $upload['error'];
+                } elseif ($upload['path'] !== null) {
+                    $saved_paths[$row['index']] = $upload['path'];
                 }
+            }
 
-                $chk = $conn->prepare("SELECT product_id FROM product WHERE group_id = ? AND variant_name = ?");
-                $chk->bind_param("is", $group_id, $variant_name);
-                $chk->execute();
-                if ($chk->get_result()->fetch_assoc()) {
-                    $chk->close();
-                    throw new RuntimeException("'$variant_name' already exists in this group.");
+            if ($upload_errors) {
+                foreach ($saved_paths as $path) {
+                    delete_product_image($path);
                 }
-                $chk->close();
-
-                $product_name = $group_name . ' ' . $variant_name;
-                $image_url    = $upload['path'] ?? PRODUCT_IMAGE_DEFAULT;
-
-                $stmt = $conn->prepare("
-                    INSERT INTO product (category_id, group_id, variant_name, product_name, price, image_url)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ");
-                $stmt->bind_param("iissds", $category_id, $group_id, $variant_name, $product_name, $price, $image_url);
-                $stmt->execute();
-                $stmt->close();
-
-                $conn->commit();
-
-                $message  = "Variant '$product_name' added to the catalog.";
-                $msg_type = "success";
-            } catch (RuntimeException $e) {
-                $conn->rollback();
-                if ($new_upload_path !== null) {
-                    delete_product_image($new_upload_path);
-                }
-                $message  = $e->getMessage();
+                $message  = implode(' ', $upload_errors);
                 $msg_type = "error";
-            } catch (mysqli_sql_exception $e) {
-                $conn->rollback();
-                if ($new_upload_path !== null) {
-                    delete_product_image($new_upload_path);
+            } else {
+                $tx_started = false;
+                try {
+                    $conn->begin_transaction();
+                    $tx_started = true;
+
+                    $category_cache = [];
+                    $group_cache    = [];
+
+                    // `name:` values are created on demand during import so the
+                    // comboboxes can offer "+ Create ..." without extra endpoints.
+                    $resolve_category = function (array $parsed, int $row_number) use ($conn, &$category_cache): int {
+                        if ($parsed['type'] === 'id') {
+                            $id = $parsed['value'];
+                            $chk = $conn->prepare("SELECT category_id FROM category WHERE category_id = ?");
+                            $chk->bind_param("i", $id);
+                            $chk->execute();
+                            $found = $chk->get_result()->fetch_assoc();
+                            $chk->close();
+                            if (!$found) {
+                                throw new RuntimeException("Row $row_number: selected category was not found.");
+                            }
+                            return $id;
+                        }
+                        if ($parsed['type'] === 'name' && $parsed['value'] !== '') {
+                            $key = strtolower($parsed['value']);
+                            if (isset($category_cache[$key])) {
+                                return $category_cache[$key];
+                            }
+
+                            $chk = $conn->prepare("SELECT category_id FROM category WHERE LOWER(category_name) = LOWER(?)");
+                            $chk->bind_param("s", $parsed['value']);
+                            $chk->execute();
+                            $found = $chk->get_result()->fetch_assoc();
+                            $chk->close();
+                            if ($found) {
+                                return $category_cache[$key] = intval($found['category_id']);
+                            }
+
+                            $ins = $conn->prepare("INSERT INTO category (category_name) VALUES (?)");
+                            $ins->bind_param("s", $parsed['value']);
+                            $ins->execute();
+                            $new_id = $conn->insert_id;
+                            $ins->close();
+                            return $category_cache[$key] = $new_id;
+                        }
+                        throw new RuntimeException("Row $row_number: category is required.");
+                    };
+
+                    $added = 0;
+                    foreach ($rows as $row) {
+                        $row_number  = $row['index'] + 1;
+                        $group_id    = 0;
+                        $group_name  = '';
+                        $category_id = 0;
+
+                        if ($row['group']['type'] === 'id') {
+                            $id = $row['group']['value'];
+                            $get = $conn->prepare("SELECT group_name, category_id FROM product_group WHERE group_id = ?");
+                            $get->bind_param("i", $id);
+                            $get->execute();
+                            $group = $get->get_result()->fetch_assoc();
+                            $get->close();
+                            if (!$group) {
+                                throw new RuntimeException("Row $row_number: selected group was not found.");
+                            }
+                            $group_id    = $id;
+                            $group_name  = $group['group_name'];
+                            $category_id = intval($group['category_id']);
+                        } elseif ($row['group']['type'] === 'name') {
+                            $group_name = $row['group']['value'];
+                            if ($group_name === '') {
+                                throw new RuntimeException("Row $row_number: type a group name or leave the group empty.");
+                            }
+                            $category_id = $resolve_category($row['category'], $row_number);
+
+                            $key = strtolower($group_name);
+                            if (isset($group_cache[$key])) {
+                                $group_id   = $group_cache[$key]['id'];
+                                $group_name = $group_cache[$key]['name'];
+                            } else {
+                                $chk = $conn->prepare("SELECT group_id, group_name, category_id FROM product_group WHERE LOWER(group_name) = LOWER(?)");
+                                $chk->bind_param("s", $group_name);
+                                $chk->execute();
+                                $found = $chk->get_result()->fetch_assoc();
+                                $chk->close();
+                                if ($found) {
+                                    $group_id   = intval($found['group_id']);
+                                    $group_name = $found['group_name'];
+                                    $category_id = intval($found['category_id']);
+                                } else {
+                                    $ins = $conn->prepare("INSERT INTO product_group (group_name, category_id) VALUES (?, ?)");
+                                    $ins->bind_param("si", $group_name, $category_id);
+                                    $ins->execute();
+                                    $group_id = $conn->insert_id;
+                                    $ins->close();
+                                }
+                                $group_cache[$key] = ['id' => $group_id, 'name' => $group_name];
+                            }
+                        } else {
+                            $category_id = $resolve_category($row['category'], $row_number);
+                        }
+
+                        if ($group_id > 0) {
+                            if ($row['variant'] === '') {
+                                throw new RuntimeException("Row $row_number: variant / flavour name is required for a grouped product.");
+                            }
+                            $chk = $conn->prepare("SELECT product_id FROM product WHERE group_id = ? AND variant_name = ?");
+                            $chk->bind_param("is", $group_id, $row['variant']);
+                            $chk->execute();
+                            $duplicate = $chk->get_result()->fetch_assoc();
+                            $chk->close();
+                            if ($duplicate) {
+                                throw new RuntimeException("Row $row_number: '{$row['variant']}' already exists in group '$group_name'.");
+                            }
+                            $variant_name = $row['variant'];
+                            $product_name = $group_name . ' ' . $variant_name;
+                        } else {
+                            if ($row['name'] === '') {
+                                throw new RuntimeException("Row $row_number: product name is required.");
+                            }
+                            $variant_name = null;
+                            $product_name = $row['name'];
+                        }
+
+                        if ($row['price'] === '' || !is_numeric($row['price'])) {
+                            throw new RuntimeException("Row $row_number: a valid price is required.");
+                        }
+                        $price = floatval($row['price']);
+                        if ($price < 0) {
+                            throw new RuntimeException("Row $row_number: price cannot be negative.");
+                        }
+
+                        $image_url = $saved_paths[$row['index']] ?? PRODUCT_IMAGE_DEFAULT;
+                        $stmt = $conn->prepare("
+                            INSERT INTO product (category_id, group_id, variant_name, product_name, price, image_url)
+                            VALUES (?, NULLIF(?, 0), ?, ?, ?, ?)
+                        ");
+                        $stmt->bind_param("iissds", $category_id, $group_id, $variant_name, $product_name, $price, $image_url);
+                        $stmt->execute();
+                        $stmt->close();
+                        $added++;
+                    }
+
+                    $conn->commit();
+                    $tx_started = false;
+
+                    $message  = $added . ($added === 1 ? ' product' : ' products') . ' added to the master catalog.';
+                    $msg_type = "success";
+                } catch (RuntimeException $e) {
+                    if ($tx_started) {
+                        try { $conn->rollback(); } catch (Throwable $ignored) {}
+                    }
+                    foreach ($saved_paths as $path) {
+                        delete_product_image($path);
+                    }
+                    $message  = $e->getMessage();
+                    $msg_type = "error";
+                } catch (mysqli_sql_exception $e) {
+                    if ($tx_started) {
+                        try { $conn->rollback(); } catch (Throwable $ignored) {}
+                    }
+                    foreach ($saved_paths as $path) {
+                        delete_product_image($path);
+                    }
+                    $message  = "Failed to add products: " . $e->getMessage();
+                    $msg_type = "error";
                 }
-                $message  = "Failed to add variant: " . $e->getMessage();
-                $msg_type = "error";
             }
         }
         $active_tab = 'inventories';
@@ -943,10 +1088,11 @@ if ($res_staffs) {
                                             View Inventory
                                         </a>
                                         <button type="button" class="dropdown-item"
-                                            onclick='openEditOutletModal(<?php echo json_encode($outlet); ?>)'>
+                                            onclick='openEditOutletModal(<?php echo htmlspecialchars(json_encode($outlet, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT), ENT_QUOTES, 'UTF-8'); ?>)'>
                                             Edit Branch
                                         </button>
                                         <form method="POST" onsubmit="return confirm('Delete <?php echo htmlspecialchars($outlet['outlet_name']); ?>?');">
+                                            <?php echo csrf_field(); ?>
                                             <input type="hidden" name="action" value="delete_outlet">
                                             <input type="hidden" name="outlet_id" value="<?php echo $outlet['outlet_id']; ?>">
                                             <button type="submit" class="dropdown-item delete">Delete Branch</button>
@@ -1132,7 +1278,7 @@ if ($res_staffs) {
                                                     Edit Product
                                                 </button>
                                                 <button type="button" class="dropdown-item"
-                                                        onclick="openAddVariantModal(<?php echo intval($p['group_id'] ?? 0); ?>)">
+                                                        onclick="openBulkAddWithGroup(<?php echo intval($p['group_id'] ?? 0); ?>)">
                                                     Add Variant
                                                 </button>
                                                 <?php if (!empty($p['group_id'])): ?>
@@ -1141,17 +1287,20 @@ if ($res_staffs) {
                                                         Edit Group
                                                     </button>
                                                     <form method="POST" onsubmit="return confirm('Remove <?php echo htmlspecialchars(addslashes($p['product_name'])); ?> from its group? It becomes a standalone product.');">
+                                                        <?php echo csrf_field(); ?>
                                                         <input type="hidden" name="action" value="remove_from_group">
                                                         <input type="hidden" name="product_id" value="<?php echo intval($p['product_id']); ?>">
                                                         <button type="submit" class="dropdown-item">Remove from Group</button>
                                                     </form>
                                                     <form method="POST" onsubmit="return confirm('Delete the group &quot;<?php echo htmlspecialchars(addslashes($p['group_name'])); ?>&quot;? Its variants stay in the catalog as standalone products.');">
+                                                        <?php echo csrf_field(); ?>
                                                         <input type="hidden" name="action" value="delete_product_group">
                                                         <input type="hidden" name="group_id" value="<?php echo intval($p['group_id']); ?>">
                                                         <button type="submit" class="dropdown-item delete">Delete Group</button>
                                                     </form>
                                                 <?php endif; ?>
                                                 <form method="POST" onsubmit="return confirm('Delete <?php echo htmlspecialchars(addslashes($p['product_name'])); ?> from the master catalog? Products with order records or stock history cannot be deleted.');">
+                                                    <?php echo csrf_field(); ?>
                                                     <input type="hidden" name="action" value="delete_master_product">
                                                     <input type="hidden" name="product_id" value="<?php echo intval($p['product_id']); ?>">
                                                     <button type="submit" class="dropdown-item delete">Delete Product</button>
@@ -1166,8 +1315,8 @@ if ($res_staffs) {
                 </div>
 
                 <?php if (!$is_branch_scope): ?>
-                    <!-- Floating '+' Button to Add a Master Product -->
-                    <button class="fab-add" onclick="openModal('addMasterProductModal')" title="Add Master Product">+</button>
+                    <!-- Floating '+' Button to Add Master Products -->
+                    <button class="fab-add" onclick="openBulkAddModal()" title="Add Products">+</button>
                 <?php endif; ?>
 
             <?php else: ?>
@@ -1199,6 +1348,7 @@ if ($res_staffs) {
                                     </button>
                                     <div class="dropdown-menu" id="menu-staff-<?php echo $staff['user_id']; ?>">
                                         <form method="POST" onsubmit="return confirm('Remove staff account <?php echo htmlspecialchars($staff['username']); ?>?');">
+                                            <?php echo csrf_field(); ?>
                                             <input type="hidden" name="action" value="delete_staff">
                                             <input type="hidden" name="user_id" value="<?php echo $staff['user_id']; ?>">
                                             <button type="submit" class="dropdown-item delete">Remove Staff</button>
@@ -1224,6 +1374,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('addOutletModal')">&times;</button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="add_outlet">
                 <div class="form-group">
                     <label>Outlet Name *</label>
@@ -1270,6 +1421,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('editOutletModal')">&times;</button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_outlet">
                 <input type="hidden" name="outlet_id" id="edit_outlet_id">
                 <div class="form-group">
@@ -1309,126 +1461,100 @@ if ($res_staffs) {
         </div>
     </div>
 
-    <!-- MODAL 3: ADD MASTER PRODUCT (SINGLE OR VARIANT) -->
-    <div class="modal-overlay" id="addMasterProductModal">
-        <div class="modal-box">
+    <!-- MODAL 3: BULK ADD MASTER PRODUCTS -->
+    <div class="modal-overlay" id="bulkAddModal">
+        <div class="modal-box modal-box-bulk">
             <div class="modal-header">
-                <h2>Add Master Product</h2>
-                <button class="close-modal" onclick="closeModal('addMasterProductModal')">&times;</button>
+                <h2>Add Products</h2>
+                <button class="close-modal" onclick="closeModal('bulkAddModal')">&times;</button>
             </div>
+            <form method="POST" enctype="multipart/form-data" id="bulkAddForm" novalidate>
+                <?php echo csrf_field(); ?>
+                <input type="hidden" name="action" value="add_bulk_products">
 
-            <div class="modal-tabs" role="tablist">
-                <button type="button" class="modal-tab active" id="addTabSingle"
-                        onclick="switchAddProductMode('single')">Single Product</button>
-                <button type="button" class="modal-tab" id="addTabVariant"
-                        onclick="switchAddProductMode('variant')">Product Variant</button>
-            </div>
+                <div id="bulkError" class="alert alert-error bulk-error" hidden role="alert"></div>
 
-            <!-- SINGLE PRODUCT -->
-            <form method="POST" enctype="multipart/form-data" id="addMasterSingleForm">
-                <input type="hidden" name="action" value="add_master_product">
-                <div class="form-group">
-                    <label>Product Name *</label>
-                    <input type="text" name="product_name" placeholder="e.g., Mineral Water 500ml" required>
+                <div class="bulk-hint">
+                    Leave Group empty for a standalone product. Choose or create a group to add variants.
+                    Images are optional (JPG, PNG or WEBP &middot; max 5 MB).
                 </div>
-                <div class="form-group">
-                    <label>Product Image</label>
-                    <div class="dropzone" id="addMasterDropzone" data-dropzone tabindex="0" role="button"
-                         aria-label="Upload product image">
-                        <input type="file" name="product_image" accept="image/jpeg,image/png,image/webp" hidden>
-                        <div class="dropzone-preview">
-                            <img alt="Product image preview">
-                            <span class="dropzone-hint">Drag &amp; drop an image here, or click to browse</span>
-                        </div>
+
+                <div class="bulk-rows" id="bulkRows"></div>
+
+                <button type="button" class="bulk-add-link" id="addBulkRowBtn">Add product +</button>
+
+                <div class="bulk-footer">
+                    <small class="form-hint">
+                        New categories and groups are created when you save. Products are added to the master catalog only.
+                    </small>
+                    <div class="bulk-actions">
+                        <button type="button" class="bulk-cancel" onclick="closeModal('bulkAddModal')">Cancel</button>
+                        <button type="submit" class="btn-submit">Save Products</button>
                     </div>
-                    <small class="form-hint">JPG, PNG or WEBP &middot; max 5 MB</small>
                 </div>
-                <div class="form-group">
-                    <label>Category *</label>
-                    <select name="category_id" required>
-                        <?php if (empty($categories)): ?>
-                            <option value="1">General</option>
-                        <?php else: ?>
-                            <?php foreach ($categories as $cat): ?>
-                                <option value="<?php echo intval($cat['category_id']); ?>">
-                                    <?php echo htmlspecialchars($cat['category_name']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Price (RM) *</label>
-                    <input type="number" name="price" step="0.01" min="0" placeholder="1.50" required>
-                </div>
-                <small class="form-hint" style="margin-bottom: 12px;">
-                    This adds the product to the master catalog only. Branch staff add it to their outlet from the catalog.
-                </small>
-                <button type="submit" class="btn-submit">Save Product</button>
-            </form>
-
-            <!-- PRODUCT VARIANT -->
-            <form method="POST" enctype="multipart/form-data" id="addMasterVariantForm" style="display: none;">
-                <input type="hidden" name="action" value="add_product_variant">
-                <div class="form-group">
-                    <label>Product Group *</label>
-                    <select name="group_id" id="add_variant_group_id" onchange="toggleVariantGroupFields()">
-                        <option value="0">+ Create a new group</option>
-                        <?php foreach ($product_groups as $grp): ?>
-                            <option value="<?php echo intval($grp['group_id']); ?>">
-                                <?php echo htmlspecialchars($grp['group_name']); ?> (<?php echo intval($grp['variant_count']); ?> variant<?php echo intval($grp['variant_count']) === 1 ? '' : 's'; ?>)
-                            </option>
-                        <?php endforeach; ?>
-                    </select>
-                </div>
-                <div class="form-group" id="add_variant_new_group_fields">
-                    <label>New Group Name *</label>
-                    <input type="text" name="new_group_name" id="add_variant_new_group_name"
-                           placeholder="e.g., Fanta">
-                    <small class="form-hint">e.g., Fanta. Variants become "Fanta Orange", "Fanta Grape", etc.</small>
-                </div>
-                <div class="form-group" id="add_variant_new_group_category">
-                    <label>Category for New Group *</label>
-                    <select name="category_id" id="add_variant_category_id">
-                        <?php if (empty($categories)): ?>
-                            <option value="1">General</option>
-                        <?php else: ?>
-                            <?php foreach ($categories as $cat): ?>
-                                <option value="<?php echo intval($cat['category_id']); ?>">
-                                    <?php echo htmlspecialchars($cat['category_name']); ?>
-                                </option>
-                            <?php endforeach; ?>
-                        <?php endif; ?>
-                    </select>
-                    <small class="form-hint">Ignored when an existing group is selected &mdash; the group's category is inherited.</small>
-                </div>
-                <div class="form-group">
-                    <label>Variant / Flavour Name *</label>
-                    <input type="text" name="variant_name" placeholder="e.g., Orange" required>
-                </div>
-                <div class="form-group">
-                    <label>Variant Image</label>
-                    <div class="dropzone" id="addVariantDropzone" data-dropzone tabindex="0" role="button"
-                         aria-label="Upload variant image">
-                        <input type="file" name="product_image" accept="image/jpeg,image/png,image/webp" hidden>
-                        <div class="dropzone-preview">
-                            <img alt="Variant image preview">
-                            <span class="dropzone-hint">Drag &amp; drop an image here, or click to browse</span>
-                        </div>
-                    </div>
-                    <small class="form-hint">JPG, PNG or WEBP &middot; max 5 MB</small>
-                </div>
-                <div class="form-group">
-                    <label>Price (RM) *</label>
-                    <input type="number" name="price" step="0.01" min="0" placeholder="2.50" required>
-                </div>
-                <small class="form-hint" style="margin-bottom: 12px;">
-                    Each variant has its own price and image. Group name, category and image are managed via "Edit Group".
-                </small>
-                <button type="submit" class="btn-submit">Save Variant</button>
             </form>
         </div>
     </div>
+
+    <template id="bulkRowTemplate">
+        <div class="bulk-row">
+            <button type="button" class="bulk-delete" title="Remove this row" aria-label="Remove this row">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor"
+                     stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M3 6h18"></path>
+                    <path d="M8 6V4h8v2"></path>
+                    <path d="M6 6l1 14h10l1-14"></path>
+                    <path d="M10 10v6M14 10v6"></path>
+                </svg>
+            </button>
+
+            <div class="bulk-thumb dropzone" data-dropzone tabindex="0" role="button"
+                 aria-label="Drag &amp; drop a product image, or click to browse">
+                <input type="file" name="product_image[]" accept="image/jpeg,image/png,image/webp" hidden>
+                <div class="dropzone-preview">
+                    <img alt="Product image preview">
+                    <span class="bulk-thumb-icon" aria-hidden="true">+</span>
+                </div>
+                <button type="button" class="bulk-thumb-clear" aria-label="Remove image"
+                        title="Remove image">&#215;</button>
+            </div>
+
+            <input type="text" name="product_name[]" class="bulk-input bulk-name" placeholder="Product Name">
+
+            <div class="combobox" data-combobox="category">
+                <div class="combobox-field">
+                    <input type="text" class="bulk-input combobox-input" placeholder="Category"
+                           autocomplete="off" aria-label="Category">
+                    <input type="hidden" name="category_value[]" class="combobox-value" value="">
+                    <span class="combobox-chevron" aria-hidden="true">&#9662;</span>
+                </div>
+                <div class="combobox-panel" hidden>
+                    <button type="button" class="combobox-create">+ Create category</button>
+                    <div class="combobox-options"></div>
+                </div>
+            </div>
+
+            <div class="combobox" data-combobox="group">
+                <div class="combobox-field">
+                    <input type="text" class="bulk-input combobox-input" placeholder="Group"
+                           autocomplete="off" aria-label="Group">
+                    <input type="hidden" name="group_value[]" class="combobox-value" value="">
+                    <span class="combobox-chevron" aria-hidden="true">&#9662;</span>
+                </div>
+                <div class="combobox-panel" hidden>
+                    <button type="button" class="combobox-create">+ Create group</button>
+                    <div class="combobox-options"></div>
+                </div>
+            </div>
+
+            <div class="bulk-variant-field" hidden>
+                <input type="text" name="variant_name[]" class="bulk-input" placeholder="Variant / Flavour Name">
+            </div>
+
+            <input type="number" name="price[]" class="bulk-input bulk-price" placeholder="Price (RM)"
+                   step="0.01" min="0">
+        </div>
+    </template>
 
     <!-- MODAL 4: EDIT MASTER PRODUCT -->
     <div class="modal-overlay" id="editMasterProductModal">
@@ -1438,6 +1564,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('editMasterProductModal')">&times;</button>
             </div>
             <form method="POST" enctype="multipart/form-data" id="editMasterProductForm">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_master_product">
                 <input type="hidden" name="product_id" id="edit_master_product_id">
                 <div class="form-group">
@@ -1507,6 +1634,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('editProductGroupModal')">&times;</button>
             </div>
             <form method="POST" enctype="multipart/form-data" id="editProductGroupForm">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="edit_product_group">
                 <input type="hidden" name="group_id" id="edit_group_id">
                 <div class="form-group">
@@ -1567,6 +1695,7 @@ if ($res_staffs) {
                 <button class="close-modal" onclick="closeModal('addStaffModal')">&times;</button>
             </div>
             <form method="POST">
+                <?php echo csrf_field(); ?>
                 <input type="hidden" name="action" value="add_staff">
                 <div class="form-group">
                     <label>Full Name *</label>
@@ -1624,6 +1753,7 @@ if ($res_staffs) {
     <script>
         window.BRANCH_STOCK = <?php echo json_encode($inventory_by_product, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
         window.PRODUCT_GROUPS = <?php echo json_encode($product_groups, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
+        window.CATEGORIES = <?php echo json_encode($categories, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT); ?>;
     </script>
     <script src="js/main.js"></script>
     <script src="js/upload.js"></script>

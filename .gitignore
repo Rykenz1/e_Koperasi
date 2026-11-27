@@ -427,8 +427,9 @@ FodyWeavers.xsd
 # User custom file
 *.sh
 something.php
-db_connect.php
 *.sql
+# Schema migrations are versioned even though local dumps are not.
+!db/migrations/*.sql
 # Uploaded product images stay out of git, except the shared placeholder
 # and the hardening file that must exist on every deployment.
 uploads/*
@@ -438,5 +439,6 @@ uploads/products/*
 !uploads/products/.htaccess
 *.md
 !README.md
+!AGENTS.md
 # Official VS Code C# Dev Kit Extension exclusion
 #*.lscache

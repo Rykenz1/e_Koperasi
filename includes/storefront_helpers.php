@@ -3,6 +3,7 @@
 // Shared read helpers for the customer storefront pages.
 
 require_once __DIR__ . '/upload_image.php';
+require_once __DIR__ . '/csrf_helpers.php';
 
 const STOREFRONT_OUTLET_SESSION_KEY = 'storefront_outlet_id';
 const STOREFRONT_CART_KEY           = 'ekoperasi_storefront_cart_v1';
@@ -364,17 +365,13 @@ function storefront_audit_user_id($conn, int $outlet_id, int $fallback_user_id):
     return $fallback_user_id;
 }
 
+// Thin wrappers so existing storefront call sites keep working unchanged.
 function storefront_csrf_token(): string
 {
-    if (empty($_SESSION['storefront_csrf'])) {
-        $_SESSION['storefront_csrf'] = bin2hex(random_bytes(32));
-    }
-    return $_SESSION['storefront_csrf'];
+    return csrf_token();
 }
 
 function storefront_csrf_valid($token): bool
 {
-    return is_string($token)
-        && !empty($_SESSION['storefront_csrf'])
-        && hash_equals($_SESSION['storefront_csrf'], $token);
+    return csrf_valid($token);
 }
